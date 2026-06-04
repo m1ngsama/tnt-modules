@@ -1,0 +1,9 @@
+{
+  "protocol": "tnt.module.v1",
+  "name": "echo-module",
+  "version": "0.1.0",
+  "description": "A minimal TNT module that echoes chat text.",
+  "entrypoint": "./echo-module.sh",
+  "permissions": ["message:read", "message:create"],
+  "events": ["message.created"]
+}
