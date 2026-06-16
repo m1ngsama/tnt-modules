@@ -28,6 +28,7 @@ Each module declares metadata in `tnt-module.json`.
   "protocol": "tnt.module.v1",
   "name": "echo-module",
   "version": "0.1.0",
+  "tnt_min_version": "1.1.0",
   "description": "Echoes chat messages back to TNT.",
   "entrypoint": "./echo-module.sh",
   "permissions": ["message:read", "message:create"],
@@ -39,6 +40,8 @@ Required fields:
 
 - `protocol`: protocol compatibility string. Use `tnt.module.v1`.
 - `name`: stable module identifier, lowercase ASCII, `a-z`, `0-9`, and `-`.
+  TNT 1.1.0 caps module names at 56 bytes so generated `module:<name>`
+  senders fit the core message username limit.
 - `version`: module version.
 - `entrypoint`: executable path relative to the manifest directory. Current
   TNT rejects absolute paths, `..`, whitespace, control characters, and shell
@@ -49,6 +52,11 @@ Required fields:
 Optional fields:
 
 - `description`: human-readable module summary.
+- `tnt_min_version`: minimum TNT version expected by the module. TNT 1.1.0's
+  module checker and install wizard use this to reject modules that require a
+  newer core.
+- Additional descriptive metadata may be added by module repositories, but
+  modules should not depend on TNT core reading unknown metadata fields.
 
 Current TNT `tnt.module.v1` runtime support is intentionally narrow: modules
 that receive `message.created` events must request `message:read`, and modules
@@ -69,7 +77,7 @@ TNT and modules communicate with JSON Lines over stdio:
 After startup, TNT sends a handshake request:
 
 ```json
-{"type":"handshake","protocol":"tnt.module.v1","server":{"name":"tnt","version":"1.0.1"}}
+{"type":"handshake","protocol":"tnt.module.v1","server":{"name":"tnt","version":"1.1.0"}}
 ```
 
 The module responds:
@@ -114,6 +122,10 @@ For no-op acknowledgement:
 ```json
 {"type":"event.ok"}
 ```
+
+TNT 1.1.0 disables a module that floods one event with too many responses or
+repeatedly emits invalid response records. Modules should emit `event.ok` when
+they are done with an event and should keep generated messages sparse.
 
 ## Errors
 
