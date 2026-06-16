@@ -16,6 +16,9 @@ module protocol string it supports in its manifest, currently
 `tnt.module.v1`, and TNT core can use that declaration to decide whether the
 module is compatible with the running server.
 
+The first repository release is `0.1.0`, aligned with TNT 1.1.0 module
+lifecycle validation.
+
 When deploying TNT with modules, set `TNT_MODULE_PATHS` to a colon-separated
 list of module directories. Unset it to return to the plain core server.
 
@@ -40,6 +43,20 @@ The first module protocol is `tnt.module.v1`. TNT sends events such as
 `message.create`.
 
 See `examples/echo-module/` for the smallest useful example.
+
+## Validation
+
+Run the repository checks:
+
+```sh
+make test
+```
+
+When checking modules against a TNT checkout, delegate to TNT's checker:
+
+```sh
+TNT_MODULE_CHECKER=/path/to/TNT/scripts/module_check.sh make test
+```
 
 ## License
 
