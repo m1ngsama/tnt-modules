@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+- Added a community "fun pack" of reusable modules under `modules/`:
+  `flip-module` (`/flip`), `8ball-module` (`/8ball`), `choose-module`
+  (`/choose a | b | c`), and `quote-module` (`/quote`). Each is a
+  self-contained, no-dependency `tnt.module.v1` module that responds only to
+  its own command and stays silent (no-op) on all other messages.
+- Added `tests/test_modules_behavior.sh`, the repository's first behavioral
+  test suite, which drives each module over JSONL and asserts response shapes.
+  Wired into `make test`.
+
 ## 0.1.0 - 2026-06-16
 
 ### Added
