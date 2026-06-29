@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- Added `modules/roll-module`, the first reusable community module: a
+  network-free dice roller that replies to chat messages starting with
+  `/roll` (e.g. `/roll 2d6`, `/roll d20`, `/roll 3d6+2`) and stays silent
+  otherwise. Validated by the repository checker and TNT core's
+  `module_check.sh`.
 - Added a community "fun pack" of reusable modules under `modules/`:
   `flip-module` (`/flip`), `8ball-module` (`/8ball`), `choose-module`
   (`/choose a | b | c`), and `quote-module` (`/quote`). Each is a
