@@ -28,6 +28,23 @@ list of module directories. Unset it to return to the plain core server.
 - `protocol/`: module manifest and JSONL protocol notes.
 - `examples/`: small modules that demonstrate the protocol shape.
 
+## Available modules
+
+Self-contained, no-dependency modules under `modules/`. Each reacts only to its
+own slash command and stays silent (no-op) on all other messages, so several
+can run at once without interfering:
+
+| Module | Command | What it does |
+| --- | --- | --- |
+| `roll-module` | `/roll [N]d<sides>[+/-K]` | Rolls dice (e.g. `/roll 2d6`, `/roll d20`, `/roll 3d6+2`). |
+| `flip-module` | `/flip` | Flips a coin (heads/tails). |
+| `8ball-module` | `/8ball <question>` | Replies like a Magic 8-Ball. |
+| `choose-module` | `/choose a \| b \| c` | Picks one option at random. |
+| `quote-module` | `/quote` | Shares a random public-domain proverb. |
+
+Enable any subset by listing their directories in `TNT_MODULE_PATHS`
+(colon-separated).
+
 ## Module Contract
 
 A TNT module should:

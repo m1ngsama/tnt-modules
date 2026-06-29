@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-06-29
+
 ### Added
 - Added `modules/roll-module`, the first reusable community module: a
   network-free dice roller that replies to chat messages starting with
