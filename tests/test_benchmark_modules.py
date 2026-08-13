@@ -51,11 +51,13 @@ class BenchmarkModulesTests(unittest.TestCase):
         *,
         terminate_event: bool = True,
         benchmark_expect_message_create: bool | None = True,
+        workload_plain_text: str = "/benchmark action",
+        respond_only_to_workload: bool = False,
         module_root: pathlib.Path | None = None,
     ) -> pathlib.Path:
         module_dir = (module_root or self.state_dir) / name
         module_dir.mkdir(parents=True)
-        benchmark = {"plain_text": "/benchmark action"}
+        benchmark = {"plain_text": workload_plain_text}
         if benchmark_expect_message_create is not None:
             benchmark["expect_message_create"] = benchmark_expect_message_create
         manifest = {
@@ -90,7 +92,12 @@ class BenchmarkModulesTests(unittest.TestCase):
                         print(json.dumps(response, separators=(",", ":")), flush=True)
                     elif request.get("type") == "message.created":
                         time.sleep({event_delay!r})
-                        print('{{"type":"message.create","plain_text":"benchmark reply"}}', flush=True)
+                        if (
+                            not {respond_only_to_workload!r}
+                            or request.get("message", {{}}).get("plain_text")
+                            == {workload_plain_text!r}
+                        ):
+                            print('{{"type":"message.create","plain_text":"benchmark reply"}}', flush=True)
                         if {terminate_event!r}:
                             print('{{"type":"event.ok"}}', flush=True)
                 """
@@ -622,10 +629,15 @@ class BenchmarkModulesTests(unittest.TestCase):
         load = report["load"]
         self.assertEqual(load["status"], "measured")
         self.assertEqual(
+            load["available_workloads"],
+            [{"module": "load-module", "plain_text": "/benchmark action"}],
+        )
+        self.assertEqual(
             [topology["instances"] for topology in load["topologies"]],
             [1, 4],
         )
         for topology in load["topologies"]:
+            self.assertEqual(topology["source_corpus"], load["available_workloads"])
             self.assertEqual(topology["offered_source_events"], 3)
             self.assertEqual(topology["completed_source_events"], 3)
             self.assertEqual(topology["dropped_source_events"], 0)
@@ -636,6 +648,9 @@ class BenchmarkModulesTests(unittest.TestCase):
                 topology["offered_deliveries"],
             )
             self.assertEqual(topology["dropped_deliveries"], 0)
+            self.assertTrue(
+                all(slot["offered_action_events"] == 3 for slot in topology["slots"])
+            )
             self.assertAlmostEqual(
                 topology["source_throughput_events_per_minute"],
                 300.0,
@@ -679,8 +694,17 @@ class BenchmarkModulesTests(unittest.TestCase):
         # here a 300/min source and a deliberately 300-ms peer create a
         # deterministic bounded-queue overload while leaving ample room for
         # the healthy Python fixture.
-        slow_dir = self.write_module("slow-load-module", event_delay=0.300)
-        fast_dir = self.write_module("fast-load-module")
+        slow_dir = self.write_module(
+            "slow-load-module",
+            event_delay=0.300,
+            workload_plain_text="/slow-load",
+            respond_only_to_workload=True,
+        )
+        fast_dir = self.write_module(
+            "fast-load-module",
+            workload_plain_text="/fast-load",
+            respond_only_to_workload=True,
+        )
         modules = [
             benchmark_module.load_module(slow_dir),
             benchmark_module.load_module(fast_dir),
@@ -697,11 +721,21 @@ class BenchmarkModulesTests(unittest.TestCase):
         )
 
         self.assertFalse(result["pass"])
-        slow_slot, fast_slot = result["topologies"][0]["slots"]
+        topology = result["topologies"][0]
+        self.assertEqual(
+            topology["source_corpus"],
+            [
+                {"module": "slow-load-module", "plain_text": "/slow-load"},
+                {"module": "fast-load-module", "plain_text": "/fast-load"},
+            ],
+        )
+        slow_slot, fast_slot = topology["slots"]
         self.assertGreater(slow_slot["dropped_events"], 0)
         self.assertEqual(fast_slot["offered_events"], 10)
         self.assertEqual(fast_slot["completed_events"], 10)
         self.assertEqual(fast_slot["dropped_events"], 0)
+        self.assertEqual(fast_slot["offered_action_events"], 5)
+        self.assertEqual(fast_slot["completed_action_events"], 5)
 
     def test_event_fault_corpus_rejects_invalid_crash_and_flood(self) -> None:
         cases = (

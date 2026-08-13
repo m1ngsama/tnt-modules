@@ -21,6 +21,9 @@
   throughput, queue depth, deadline misses, per-slot latency, and aggregate
   source p50/p95/p99; CI rejects dropped or over-budget command events, and a
   slow-slot regression proves that a healthy peer continues independently.
+  The driver broadcasts one shared, round-robin command corpus to every slot,
+  matching TNT event delivery instead of synthesizing simultaneous unrelated
+  slash commands.
 - Added deterministic fault-corpus coverage for slow or unterminated responses,
   invalid JSON, process crashes, response floods, stubborn descendants, and
   benchmark interruption without allowing unbounded queues or leaked process

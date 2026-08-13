@@ -192,18 +192,26 @@ individual awk/parser functions inside one command.
 
 The optional fixed-rate load profile fans one source stream out concurrently
 to 1, 4, and 8 module slots. It offers 1,000 source events per minute for six
-seconds per topology by default, after five warmups per slot. Each process has
-at most one in-flight event and one pending event in its driver queue. A further
-arrival while that bounded slot is full is counted as dropped instead of
-accumulating memory. The single waiting position absorbs one within-budget
-60–100-ms jitter at the 60-ms arrival interval, while sustained overload still
-fails through drops or the 100-ms source deadline. The report includes
-assignments, offered/completed source events and deliveries, drops, throughput,
-queue depth, deadline misses, and per-slot plus fan-out p50/p95/p99 latency.
-Repository modules are reused round-robin when a topology has more slots than
-distinct selected modules. Regression fixtures also verify that a persistently
-slow slot exhausts only its own bounded queue while a healthy peer completes
-the full offered stream.
+seconds per topology by default, after five action-path warmups per slot. The
+fixed corpus contains one real command for each distinct module assigned to the
+topology. Every source arrival selects the next corpus command and broadcasts
+that exact JSONL event to every slot: its target module must create a message,
+while the other bundled modules must return only `event.ok`. This models TNT's
+single-event broadcast semantics instead of the impossible case where one
+source event becomes a different slash command for every module.
+
+Each process has at most one in-flight event and one pending event in its driver
+queue. A further arrival while that bounded slot is full is counted as dropped
+instead of accumulating memory. The single waiting position absorbs one
+within-budget 60–100-ms jitter at the 60-ms arrival interval, while sustained
+overload still fails through drops or the 100-ms source deadline. The report
+includes assignments, the exact per-topology corpus, offered/completed source
+events, deliveries and action events, drops, throughput, queue depth, deadline
+misses, and per-slot plus fan-out p50/p95/p99 latency. Repository modules are
+reused round-robin when a topology has more slots than distinct selected
+modules. Regression fixtures also verify that a persistently slow slot exhausts
+only its own bounded queue while a healthy peer completes the full offered
+stream.
 
 The optional idle resource profile starts the requested number of module slots
 at the same time, handshakes each one, lets them settle, and then samples every
@@ -236,13 +244,14 @@ the sample, timeout, load, and idle-resource configuration; enforced `budgets`;
 the independent `transport_limits`; each module's version, directory, workload,
 latency and stdout summaries; `idle_resources`; `load`; failures; an `error`
 value; and overall pass status. Optional profile status is `not_requested`,
-`measured`, or `error`. A measured result contains its backend/topology,
-assignments, duration, per-slot summaries, aggregate summaries, failures, and
-pass status. On a normal run, `error` is `null`. If a benchmark, protocol, or
-resource backend error interrupts the run, the requested JSON report still
-retains completed results, records the error, sets the requested profile and
-overall pass to false, and returns status 2 rather than silently passing an
-unavailable metric.
+`measured`, or `error`. A load result also records available workloads, each
+topology's exact source corpus, and offered/completed action-event counts. A
+measured result contains its backend/topology, assignments, duration, per-slot
+summaries, aggregate summaries, failures, and pass status. On a normal run,
+`error` is `null`. If a benchmark, protocol, or resource backend error
+interrupts the run, the requested JSON report still retains completed results,
+records the error, sets the requested profile and overall pass to false, and
+returns status 2 rather than silently passing an unavailable metric.
 
 In schema v1, `transport_limits` records a 4,094-byte JSONL payload, eight event
 response records, and 32,760 event-output bytes including newlines. These are
@@ -259,24 +268,24 @@ artifacts.
 
 | Module | Startup p95 (ms) | Event p95 (ms) | Event p99 (ms) |
 | --- | ---: | ---: | ---: |
-| `8ball-module` | 14.137 | 13.057 | 13.800 |
-| `choose-module` | 8.818 | 13.350 | 15.917 |
-| `flip-module` | 8.452 | 11.867 | 12.086 |
-| `quote-module` | 8.399 | 8.848 | 9.193 |
-| `roll-module` | 7.847 | 11.804 | 11.973 |
+| `8ball-module` | 9.408 | 12.101 | 12.255 |
+| `choose-module` | 7.687 | 11.743 | 12.281 |
+| `flip-module` | 9.193 | 13.649 | 14.633 |
+| `quote-module` | 8.839 | 10.888 | 12.338 |
+| `roll-module` | 8.196 | 11.893 | 12.074 |
 
 All five modules stayed below both the currently enforced redlines and the
 20-ms ideal event p95 target on this reference host.
 
 The same run offered 100 source events at each of the 1-, 4-, and 8-slot
 topologies. It completed all 1,300 deliveries without a drop or deadline miss
-at 1,000 source events/minute. Source fan-out p95/p99 was 28.637/33.544 ms,
-34.881/42.358 ms, and 43.878/50.360 ms respectively.
+at 1,000 source events/minute. Source fan-out p95/p99 was 26.488/30.842 ms,
+29.253/34.924 ms, and 30.681/40.908 ms respectively.
 
 A subsequent default ten-second resource run on the same host started eight
 slots (the five modules followed by reused `8ball`, `choose`, and `flip` slots).
-Every slot had one process, per-slot peak RSS ranged from 1,904 to 2,208 KiB,
-aggregate peak RSS was 16,208 KiB, and sampled idle CPU was 0.0% for every slot.
+Every slot had one process, per-slot peak RSS ranged from 2,000 to 2,080 KiB,
+aggregate peak RSS was 16,224 KiB, and sampled idle CPU was 0.0% for every slot.
 This is a local reference; the retained macOS and Linux CI reports remain the
 cross-platform evidence for each run.
 

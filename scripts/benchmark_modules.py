@@ -17,7 +17,6 @@ import math
 import os
 import pathlib
 import platform
-import queue
 import selectors
 import signal
 import statistics
@@ -163,6 +162,7 @@ class LoadEventMeasurement:
     slot_latency_ms: float
     source_latency_ms: float
     output_bytes: int
+    action_expected: bool
 
 
 @dataclass
@@ -170,9 +170,6 @@ class LoadSlot:
     slot: int
     spec: ModuleSpec
     running: RunningModule
-    work_queue: queue.Queue[int] = field(
-        default_factory=lambda: queue.Queue(maxsize=LOAD_QUEUE_CAPACITY_PER_SLOT)
-    )
     measurements: list[LoadEventMeasurement] = field(default_factory=list)
     dropped_sequences: list[int] = field(default_factory=list)
     queue_depth_max: int = 0
@@ -780,7 +777,11 @@ def handshake_request() -> dict[str, Any]:
     }
 
 
-def event_request(spec: ModuleSpec, sequence: int) -> dict[str, Any]:
+def event_request(
+    spec: ModuleSpec,
+    sequence: int,
+    plain_text: str | None = None,
+) -> dict[str, Any]:
     return {
         "type": "message.created",
         "message": {
@@ -788,7 +789,9 @@ def event_request(spec: ModuleSpec, sequence: int) -> dict[str, Any]:
             "timestamp": "1970-01-01T00:00:00Z",
             "sender": "benchmark",
             "kind": "text",
-            "plain_text": spec.workload_plain_text,
+            "plain_text": (
+                spec.workload_plain_text if plain_text is None else plain_text
+            ),
             "metadata": {"benchmark": True},
         },
     }
@@ -822,11 +825,20 @@ def perform_event(
     spec: ModuleSpec,
     sequence: int,
     timeout_seconds: float,
+    *,
+    plain_text: str | None = None,
+    expect_message_create: bool | None = None,
+    allow_message_create: bool = True,
 ) -> Measurement:
     context = f"{spec.name} event {sequence}"
     started = time.perf_counter()
     deadline = time.monotonic() + timeout_seconds
-    running.write_json(event_request(spec, sequence), context)
+    running.write_json(event_request(spec, sequence, plain_text), context)
+    message_create_required = (
+        spec.expect_message_create
+        if expect_message_create is None
+        else expect_message_create
+    )
 
     output_bytes = 0
     message_create_seen = False
@@ -836,13 +848,18 @@ def perform_event(
         response = strict_json_object(raw, f"{context} record {record_number}")
         response_type = response.get("type")
         if response_type == "event.ok":
-            if spec.expect_message_create and not message_create_seen:
+            if message_create_required and not message_create_seen:
                 raise BenchmarkError(
                     f"{context}: workload expected message.create before event.ok"
                 )
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             return Measurement(latency_ms=elapsed_ms, output_bytes=output_bytes)
         if response_type == "message.create":
+            if not allow_message_create:
+                raise BenchmarkError(
+                    f"{context} record {record_number}: "
+                    "unexpected message.create for non-target workload"
+                )
             plain_text = response.get("plain_text")
             if not isinstance(plain_text, str) or not plain_text:
                 raise BenchmarkError(
@@ -916,46 +933,85 @@ def run_load_slot(
     slot: LoadSlot,
     *,
     start_at: float,
+    event_count: int,
     interval_seconds: float,
     event_timeout_seconds: float,
     sequence_base: int,
-    producer_done: threading.Event,
+    source_corpus: Sequence[ModuleSpec],
     stop_event: threading.Event,
 ) -> None:
-    """Consume one module's bounded queue with at most one in-flight event."""
+    """Consume one slot against a fixed arrival clock and one pending event."""
 
+    next_arrival = 0
+    pending_sequence: int | None = None
     try:
-        while True:
+        while pending_sequence is not None or next_arrival < event_count:
             if stop_event.is_set():
                 return
-            try:
-                sequence = slot.work_queue.get(timeout=0.02)
-            except queue.Empty:
-                if producer_done.is_set():
-                    return
-                continue
 
-            try:
-                if stop_event.is_set():
-                    return
+            if pending_sequence is None:
+                sequence = next_arrival
+                next_arrival += 1
                 scheduled_at = start_at + (sequence * interval_seconds)
-                measurement = perform_event(
-                    slot.running,
-                    slot.spec,
-                    sequence_base + sequence,
-                    event_timeout_seconds,
+                if stop_event.wait(max(0.0, scheduled_at - time.monotonic())):
+                    return
+            else:
+                sequence = pending_sequence
+                pending_sequence = None
+                scheduled_at = start_at + (sequence * interval_seconds)
+
+            # The current event occupied the single waiting position until this
+            # worker started it. If scheduling woke us after later arrivals,
+            # those already-arrived records could not have entered the full
+            # queue and are dropped before service begins.
+            service_started = time.monotonic()
+            while (
+                next_arrival < event_count
+                and start_at + (next_arrival * interval_seconds) < service_started
+            ):
+                slot.dropped_sequences.append(next_arrival)
+                next_arrival += 1
+
+            source_spec = source_corpus[sequence % len(source_corpus)]
+            action_expected = (
+                slot.spec.name == source_spec.name
+                and slot.spec.expect_message_create
+            )
+            measurement = perform_event(
+                slot.running,
+                slot.spec,
+                sequence_base + sequence,
+                event_timeout_seconds,
+                plain_text=source_spec.workload_plain_text,
+                expect_message_create=action_expected,
+                allow_message_create=(
+                    action_expected or not slot.spec.expect_message_create
+                ),
+            )
+            completed_at = time.monotonic()
+            slot.measurements.append(
+                LoadEventMeasurement(
+                    sequence=sequence,
+                    slot_latency_ms=measurement.latency_ms,
+                    source_latency_ms=(completed_at - scheduled_at) * 1_000.0,
+                    output_bytes=measurement.output_bytes,
+                    action_expected=action_expected,
                 )
-                completed_at = time.monotonic()
-                slot.measurements.append(
-                    LoadEventMeasurement(
-                        sequence=sequence,
-                        slot_latency_ms=measurement.latency_ms,
-                        source_latency_ms=(completed_at - scheduled_at) * 1_000.0,
-                        output_bytes=measurement.output_bytes,
-                    )
-                )
-            finally:
-                slot.work_queue.task_done()
+            )
+
+            # Classify every arrival that occurred during service. The first
+            # waits in the one-record queue; later arrivals are dropped until
+            # this worker removes that pending record on the next iteration.
+            while (
+                next_arrival < event_count
+                and start_at + (next_arrival * interval_seconds) <= completed_at
+            ):
+                if pending_sequence is None:
+                    pending_sequence = next_arrival
+                    slot.queue_depth_max = LOAD_QUEUE_CAPACITY_PER_SLOT
+                else:
+                    slot.dropped_sequences.append(next_arrival)
+                next_arrival += 1
     except BaseException as exc:
         slot.error = exc
         stop_event.set()
@@ -966,10 +1022,19 @@ def load_slot_report(
     *,
     event_count: int,
     duration_seconds: float,
+    source_corpus: Sequence[ModuleSpec],
 ) -> dict[str, Any]:
     slot_latencies = [item.slot_latency_ms for item in slot.measurements]
     source_latencies = [item.source_latency_ms for item in slot.measurements]
     output_bytes = [item.output_bytes for item in slot.measurements]
+    offered_action_events = sum(
+        slot.spec.name == source_corpus[sequence % len(source_corpus)].name
+        and slot.spec.expect_message_create
+        for sequence in range(event_count)
+    )
+    completed_action_events = sum(
+        item.action_expected for item in slot.measurements
+    )
     deadline_misses = sum(
         latency > EVENT_P99_BUDGET_MS for latency in source_latencies
     )
@@ -1013,6 +1078,8 @@ def load_slot_report(
         "offered_events": event_count,
         "completed_events": len(slot.measurements),
         "dropped_events": len(slot.dropped_sequences),
+        "offered_action_events": offered_action_events,
+        "completed_action_events": completed_action_events,
         "deadline_misses": deadline_misses,
         "throughput_events_per_minute": (
             len(slot.measurements) * 60.0 / duration_seconds
@@ -1052,9 +1119,14 @@ def benchmark_load_topology(
         )
     measured_duration_seconds = event_count * interval_seconds
     assignments = [modules[index % len(modules)] for index in range(instances)]
+    source_corpus: list[ModuleSpec] = []
+    source_names: set[str] = set()
+    for spec in assignments:
+        if spec.name not in source_names:
+            source_corpus.append(spec)
+            source_names.add(spec.name)
     slots: list[LoadSlot] = []
     threads: list[threading.Thread] = []
-    producer_done = threading.Event()
     stop_event = threading.Event()
 
     with contextlib.ExitStack() as stack:
@@ -1078,10 +1150,11 @@ def benchmark_load_topology(
                 kwargs={
                     "slot": slot,
                     "start_at": start_at,
+                    "event_count": event_count,
                     "interval_seconds": interval_seconds,
                     "event_timeout_seconds": event_timeout_seconds,
                     "sequence_base": 100_000_000 + (instances * 1_000_000),
-                    "producer_done": producer_done,
+                    "source_corpus": source_corpus,
                     "stop_event": stop_event,
                 },
                 name=f"tnt-load-slot-{slot.slot}",
@@ -1090,22 +1163,6 @@ def benchmark_load_topology(
             thread.start()
 
         try:
-            for sequence in range(event_count):
-                scheduled_at = start_at + (sequence * interval_seconds)
-                if stop_event.wait(max(0.0, scheduled_at - time.monotonic())):
-                    break
-                for slot in slots:
-                    try:
-                        slot.work_queue.put_nowait(sequence)
-                    except queue.Full:
-                        slot.dropped_sequences.append(sequence)
-                    else:
-                        slot.queue_depth_max = max(
-                            slot.queue_depth_max,
-                            slot.work_queue.qsize(),
-                        )
-            producer_done.set()
-
             completion_deadline = (
                 start_at
                 + measured_duration_seconds
@@ -1123,7 +1180,6 @@ def benchmark_load_topology(
                     )
         finally:
             stop_event.set()
-            producer_done.set()
             join_deadline = time.monotonic() + event_timeout_seconds + 1.0
             for thread in threads:
                 thread.join(timeout=max(0.0, join_deadline - time.monotonic()))
@@ -1145,6 +1201,7 @@ def benchmark_load_topology(
             slot,
             event_count=event_count,
             duration_seconds=measured_duration_seconds,
+            source_corpus=source_corpus,
         )
         for slot in slots
     ]
@@ -1208,6 +1265,13 @@ def benchmark_load_topology(
     return {
         "instances": instances,
         "assignments": assignments_report,
+        "source_corpus": [
+            {
+                "module": module.name,
+                "plain_text": module.workload_plain_text,
+            }
+            for module in source_corpus
+        ],
         "configured_duration_seconds": duration_seconds,
         "measured_duration_seconds": measured_duration_seconds,
         "arrival_interval_ms": interval_seconds * 1_000.0,
@@ -1261,6 +1325,13 @@ def benchmark_load(
     ]
     return {
         "status": "measured",
+        "available_workloads": [
+            {
+                "module": module.name,
+                "plain_text": module.workload_plain_text,
+            }
+            for module in modules
+        ],
         "topologies": topology_reports,
         "pass": not failures,
         "failures": failures,
