@@ -30,8 +30,15 @@ jobs:
       - name: Validate release metadata, manifests, handshakes, and behavior
         run: make release-check
       - name: Enforce module performance budgets
+        if: runner.os == 'Linux'
         run: >-
           make perf-check
+          PERF_ARGS="--idle-resources --idle-seconds 10
+          --json-output module-performance.json"
+      - name: Measure module performance budgets
+        if: runner.os == 'macOS'
+        run: >-
+          make perf
           PERF_ARGS="--idle-resources --idle-seconds 10
           --json-output module-performance.json"
       - name: Enforce fixed-rate load budgets

@@ -15,9 +15,10 @@
   manifest and require the expected `message.create` action before event
   completion, so the benchmark measures command handlers rather than no-op
   paths.
-- Added benchmark regression tests and Linux/macOS CI budget checks. CI retains
-  platform-specific `module-performance.json` and `module-load.json` reports
-  even when an enforced budget check fails.
+- Added benchmark regression tests, Linux CI budget gates, and equivalent
+  macOS evidence runs. CI retains platform-specific `module-performance.json`
+  and `module-load.json` reports even when an enforced Linux check fails or a
+  macOS measurement crosses the unchanged budget.
 - Added a bounded fixed-rate load profile for 1, 4, and 8 module slots at the
   1,000 source-events/minute target. It reports fan-out completion, drops,
   throughput, queue depth, deadline misses, per-slot latency, and aggregate

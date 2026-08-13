@@ -24,18 +24,19 @@ security, privacy, accessibility, or maintainability.
 The ideal targets describe where the project wants normal operation to remain.
 The regression redlines are the maximum tolerated values; crossing one needs a
 measurement, an explanation, and a recovery plan. Rows marked "enforced" are
-checked by the corresponding profile. CI hard-gates the quick latency/output
-and idle-resource profiles on both platforms and the fixed-rate load profile
-on Linux; macOS records the same load profile as cross-platform evidence.
+checked by the corresponding profile. CI hard-gates latency, output, idle
+resources, and fixed-rate load on Linux. macOS runs the same measurements and
+retains their unchanged budget evaluation as cross-platform evidence without
+turning hosted-runner scheduling stalls into release failures.
 
 | Metric | Ideal target | Regression redline | Current automation |
 | --- | ---: | ---: | --- |
-| Single-module startup p95 | ≤ 50 ms | > 150 ms | Enforced |
-| Single-event response p95 / p99 | ≤ 20 / 50 ms | > 50 / 100 ms | Enforced |
-| Single-module idle RSS | ≤ 8 MiB | > 16 MiB | CI resource gate |
-| Eight-module total idle RSS | ≤ 48 MiB | > 80 MiB | CI: 8 slots |
-| CPU with no events | ~0% | > 0.2% per module | CI resource gate |
-| Stdout per event | ≤ 8 KiB | > 32 KiB | Enforced |
+| Single-module startup p95 | ≤ 50 ms | > 150 ms | Linux gate; macOS report |
+| Single-event response p95 / p99 | ≤ 20 / 50 ms | > 50 / 100 ms | Linux gate; macOS report |
+| Single-module idle RSS | ≤ 8 MiB | > 16 MiB | Linux gate; macOS report |
+| Eight-module total idle RSS | ≤ 48 MiB | > 80 MiB | Linux gate; macOS report |
+| CPU with no events | ~0% | > 0.2% per module | Linux gate; macOS report |
+| Stdout per event | ≤ 8 KiB | > 32 KiB | Linux gate; macOS report |
 | 1/4/8 load | 1,000 events/min | Drops or >100 ms | Linux gate; macOS report |
 | Fault isolation | ≤ 3 invalid | Core impact | Driver tests; core-owned |
 
@@ -45,10 +46,11 @@ event p99 ≤ 100 ms, maximum event stdout ≤ 32,768 bytes, per-slot peak idle 
 CPU ≤ 0.2% of one core. Resource limits are applied when `--idle-resources` is
 enabled. The `--load` profile additionally requires zero drops, complete
 fan-out, p95/p99 within the 50/100-ms event limits, and zero source responses
-past 100 ms. CI enables the idle-resource profile on both platforms. It
-hard-gates fixed-rate load on Linux and measures the identical workload on
-macOS without converting hosted-runner scheduling stalls into a weaker budget.
-The ideal values are not relaxed merely because automation gates the redlines.
+past 100 ms. CI measures the latency/output, idle-resource, and fixed-rate load
+profiles on both platforms. Linux hard-gates all of them; macOS records the
+identical workloads without converting hosted-runner scheduling stalls into a
+weaker budget. The JSON still marks every macOS budget miss explicitly. The
+ideal values are not relaxed merely because automation gates the redlines.
 
 The 32,768-byte stdout value is the policy redline recorded in Issue #7. TNT's
 transport is slightly stricter: each of at most eight response records has a
@@ -298,14 +300,14 @@ cross-platform evidence for each run.
 GitHub Actions continues to run the benchmark directly after the test suite
 instead of routing its artifact-producing runs through checker
 `--performance`. On both `ubuntu-24.04` and `macos-latest`, the
-`module-performance.json` report hard-gates startup/event latency, output, and
+`module-performance.json` report measures startup/event latency, output, and
 the eight-slot, ten-second idle-resource profile. Each job also writes
 `module-load.json` with the same 1,000-events/minute, 1/4/8-slot workload.
-Linux hard-gates that load report; macOS keeps it informational because the
-hosted virtual runner does not provide a stable target-equivalent scheduling
-environment. A macOS budget miss remains explicit as `pass: false` in the
-artifact rather than weakening the 50/100-ms or zero-drop limits. Both reports
-are uploaded even when an enforced step fails, under:
+Linux hard-gates both reports; macOS keeps both informational because the
+hosted virtual runner does not provide stable target-equivalent scheduling.
+A macOS budget miss remains explicit as `pass: false` in the artifact rather
+than weakening the 50/100-ms, resource, or zero-drop limits. Both reports are
+uploaded even when a Linux enforced step fails, under:
 
 - `module-performance-ubuntu-24.04`
 - `module-performance-macos-latest`
