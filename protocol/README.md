@@ -29,7 +29,7 @@ Each module declares metadata in `tnt-module.json`.
 {
   "protocol": "tnt.module.v1",
   "name": "echo-module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "tnt_min_version": "1.1.0",
   "description": "Echoes chat messages back to TNT.",
   "entrypoint": "./echo-module.sh",
@@ -45,7 +45,7 @@ Required fields:
   TNT 1.1.0 caps module names at 56 bytes so generated `module:<name>`
   senders fit the core message username limit.
 - `version`: module version in `MAJOR.MINOR.PATCH` form (for example,
-  `0.1.0`).
+  `0.2.0`).
 - `entrypoint`: executable path relative to the manifest directory. Current
   TNT rejects absolute paths, `..`, whitespace, control characters, and shell
   metacharacters in entrypoints.
@@ -91,7 +91,7 @@ After startup, TNT sends a handshake request:
 The module responds:
 
 ```json
-{"type":"handshake.ok","protocol":"tnt.module.v1","module":{"name":"echo-module","version":"0.1.0"}}
+{"type":"handshake.ok","protocol":"tnt.module.v1","module":{"name":"echo-module","version":"0.2.0"}}
 ```
 
 If the module cannot support the requested protocol version, it responds with

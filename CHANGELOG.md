@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-08-13
+
 ### Added
 
 - Added a reproducible, standard-library Python benchmark for cold process
@@ -38,6 +40,12 @@
   built-in or delegated static checks finish, it invokes the shared benchmark
   once for every checked directory to enforce latency, output, bounded load,
   and eight-slot idle-resource budgets; the default checker remains fast.
+- Added a cross-repository release gate that delegates validation to TNT's
+  authoritative checker, runs every bundled module under a real TNT server,
+  exercises all slash commands through SSH, verifies persisted responses, and
+  confirms graceful module-process cleanup.
+- Added release metadata validation and tag/version alignment checks to the
+  default CI gate.
 
 ### Fixed
 
@@ -81,6 +89,8 @@
   manifests, process timeouts, transport boundaries, and checker delegation.
 - Clarified the protocol and module documentation that `event.ok` is the
   required terminator for every non-handshake event, including no-op events.
+- Bumped the bundled module and echo-example versions to `0.2.0` for their
+  hardened JSON parser, bounded output, and explicit event-completion behavior.
 
 ## 0.2.0 - 2026-06-29
 

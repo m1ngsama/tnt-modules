@@ -16,7 +16,7 @@ module protocol string it supports in its manifest, currently
 `tnt.module.v1`, and TNT core can use that declaration to decide whether the
 module is compatible with the running server.
 
-The current repository release is `0.2.0`. Its modules require TNT 1.1.0 or
+The current repository release is `0.3.0`. Its modules require TNT 1.1.0 or
 newer and use the stable `tnt.module.v1` protocol.
 
 When deploying TNT with modules, set `TNT_MODULE_PATHS` to a colon-separated
@@ -120,6 +120,15 @@ When checking modules against a TNT checkout, delegate to TNT's checker:
 
 ```sh
 TNT_MODULE_CHECKER=/path/to/TNT/scripts/module_check.sh make test
+```
+
+The release gate also builds TNT core, starts all five bundled modules in one
+server, drives their slash commands through real SSH exec sessions, verifies
+the persisted responses, and confirms that graceful shutdown reaps every
+module process:
+
+```sh
+make core-check core-integration TNT_ROOT=/path/to/TNT
 ```
 
 `scripts/check_modules.sh --checker /path/to/module_check.sh --performance`

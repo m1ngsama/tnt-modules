@@ -300,11 +300,24 @@ assert_handshakes() {
     handshake_dir=$2
     handshake_entry=$3
     handshake_name=$4
+    handshake_version=$(python3 - "$ROOT/$handshake_dir/tnt-module.json" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+version = manifest.get("version")
+if not isinstance(version, str):
+    raise SystemExit("manifest version is not a string")
+print(version)
+PY
+    )
+    handshake_version_pattern=$(printf '%s' "$handshake_version" | sed 's/\./\\\./g')
 
     handshake_file="$STATE_DIR/$handshake_label-handshake.out"
     module_out "$handshake_file" "$handshake_dir" "$handshake_entry" "$HS"
     assert_json_lines "$handshake_label: supported handshake" "$handshake_file" \
-        "^\\{\"type\":\"handshake\\.ok\",\"protocol\":\"tnt\\.module\\.v1\",\"module\":\\{\"name\":\"$handshake_name\",\"version\":\"0\\.1\\.0\"\\}\\}$"
+        "^\\{\"type\":\"handshake\\.ok\",\"protocol\":\"tnt\\.module\\.v1\",\"module\":\\{\"name\":\"$handshake_name\",\"version\":\"$handshake_version_pattern\"\\}\\}$"
 
     handshake_file="$STATE_DIR/$handshake_label-bad-handshake.out"
     module_out "$handshake_file" "$handshake_dir" "$handshake_entry" "$BAD_HS"

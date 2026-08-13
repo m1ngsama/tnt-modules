@@ -89,7 +89,7 @@ while IFS= read -r line; do
   if [ "$type" = "handshake" ]; then
     protocol=$(json_string_field "" protocol "$line")
     if [ "$protocol" = "tnt.module.v1" ]; then
-      printf '{"type":"handshake.ok","protocol":"tnt.module.v1","module":{"name":"echo-module","version":"0.1.0"}}\n'
+      printf '{"type":"handshake.ok","protocol":"tnt.module.v1","module":{"name":"echo-module","version":"0.2.0"}}\n'
     else
       printf '{"type":"error","code":"unsupported_protocol","message":"requires tnt.module.v1"}\n'
     fi

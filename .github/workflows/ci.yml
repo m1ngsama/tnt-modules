@@ -3,10 +3,18 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
   contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -18,9 +26,9 @@ jobs:
         os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Validate manifests, handshakes, and module behavior
-        run: make test
+      - uses: actions/checkout@v6
+      - name: Validate release metadata, manifests, handshakes, and behavior
+        run: make release-check
       - name: Enforce module performance budgets
         run: >-
           make perf-check
@@ -38,10 +46,36 @@ jobs:
           PERF_ARGS="--json-output module-load.json"
       - name: Upload performance report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: module-performance-${{ matrix.os }}
           path: |
             module-performance.json
             module-load.json
           if-no-files-found: warn
+
+  core-compatibility:
+    name: TNT core compatibility
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out modules
+        uses: actions/checkout@v6
+        with:
+          path: tnt-modules
+      - name: Check out TNT core
+        uses: actions/checkout@v6
+        with:
+          repository: m1ngsama/TNT
+          ref: main
+          path: TNT
+      - name: Install TNT dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y expect libssh-dev
+      - name: Build TNT core
+        run: make -C TNT
+      - name: Validate with TNT's authoritative checker
+        run: make -C tnt-modules core-check TNT_ROOT="$GITHUB_WORKSPACE/TNT"
+      - name: Exercise all modules through a real TNT server
+        run: make -C tnt-modules core-integration TNT_ROOT="$GITHUB_WORKSPACE/TNT"
