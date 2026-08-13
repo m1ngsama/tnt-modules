@@ -29,37 +29,6 @@ jobs:
       - uses: actions/checkout@v6
       - name: Validate release metadata, manifests, handshakes, and behavior
         run: make release-check
-      - name: Enforce module performance budgets
-        if: runner.os == 'Linux'
-        run: >-
-          make perf-check
-          PERF_ARGS="--idle-resources --idle-seconds 10
-          --json-output module-performance.json"
-      - name: Measure module performance budgets
-        if: runner.os == 'macOS'
-        run: >-
-          make perf
-          PERF_ARGS="--idle-resources --idle-seconds 10
-          --json-output module-performance.json"
-      - name: Enforce fixed-rate load budgets
-        if: runner.os == 'Linux'
-        run: >-
-          make perf-load
-          PERF_ARGS="--check --json-output module-load.json"
-      - name: Measure fixed-rate load budgets
-        if: runner.os == 'macOS'
-        run: >-
-          make perf-load
-          PERF_ARGS="--json-output module-load.json"
-      - name: Upload performance report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: module-performance-${{ matrix.os }}
-          path: |
-            module-performance.json
-            module-load.json
-          if-no-files-found: warn
 
   core-compatibility:
     name: TNT core compatibility

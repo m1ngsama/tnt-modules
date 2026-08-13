@@ -52,8 +52,8 @@ STARTUP_P95_BUDGET_MS = 150.0
 EVENT_P95_BUDGET_MS = 50.0
 EVENT_P99_BUDGET_MS = 100.0
 EVENT_OUTPUT_BUDGET_BYTES = 32_768
-MODULE_IDLE_RSS_BUDGET_KIB = 16 * 1024
-EIGHT_MODULE_IDLE_RSS_BUDGET_KIB = 80 * 1024
+MODULE_IDLE_RSS_BUDGET_KIB = 8 * 1024
+EIGHT_MODULE_IDLE_RSS_BUDGET_KIB = 32 * 1024
 MODULE_IDLE_CPU_BUDGET_PERCENT = 0.2
 
 # TNT core reads responses into a 4096-byte C buffer. Newline and NUL framing
@@ -1771,8 +1771,8 @@ def print_human_report(report: dict[str, Any], enforce: bool) -> None:
     )
     if config["idle_resources"]["enabled"]:
         print(
-            "idle budgets: module RSS <= 16384 KiB; exact 8-slot RSS <= "
-            "81920 KiB; module CPU <= 0.2% of one core"
+            "idle budgets: module RSS <= 8192 KiB; exact 8-slot RSS <= "
+            "32768 KiB; module CPU <= 0.2% of one core"
         )
     if config["load"]["enabled"]:
         print(

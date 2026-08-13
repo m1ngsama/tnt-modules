@@ -114,7 +114,7 @@ make perf-check PERF_ARGS="--load --idle-resources \
 ```
 
 See [PERFORMANCE.md](PERFORMANCE.md) for the target environment, budgets,
-measurement method, CI artifacts, and current coverage gaps.
+measurement method, on-demand workflow, and current coverage gaps.
 
 When checking modules against a TNT checkout, delegate to TNT's checker:
 

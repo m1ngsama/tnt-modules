@@ -1,0 +1,40 @@
+name: Performance charter
+
+on:
+  workflow_dispatch:
+    inputs:
+      retain_report:
+        description: Retain JSON for review (failures are always retained)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: module-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  module-profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run startup, idle, and fixed-rate load contracts
+        run: >-
+          make perf-check
+          PERF_ARGS="--load --idle-resources --idle-seconds 10
+          --json-output module-performance.json"
+      - name: Preserve requested or failed evidence
+        if: ${{ failure() || inputs.retain_report }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: module-performance-${{ github.run_id }}
+          path: module-performance.json
+          if-no-files-found: warn
+          retention-days: 3
