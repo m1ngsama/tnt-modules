@@ -24,12 +24,24 @@ jobs:
       - name: Enforce module performance budgets
         run: >-
           make perf-check
-          PERF_ARGS="--idle-resources --idle-seconds 10 --load
+          PERF_ARGS="--idle-resources --idle-seconds 10
           --json-output module-performance.json"
+      - name: Enforce fixed-rate load budgets
+        if: runner.os == 'Linux'
+        run: >-
+          make perf-load
+          PERF_ARGS="--check --json-output module-load.json"
+      - name: Measure fixed-rate load budgets
+        if: runner.os == 'macOS'
+        run: >-
+          make perf-load
+          PERF_ARGS="--json-output module-load.json"
       - name: Upload performance report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: module-performance-${{ matrix.os }}
-          path: module-performance.json
+          path: |
+            module-performance.json
+            module-load.json
           if-no-files-found: warn

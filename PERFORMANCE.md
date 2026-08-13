@@ -24,8 +24,9 @@ security, privacy, accessibility, or maintainability.
 The ideal targets describe where the project wants normal operation to remain.
 The regression redlines are the maximum tolerated values; crossing one needs a
 measurement, an explanation, and a recovery plan. Rows marked "enforced" are
-checked by the corresponding profile; the CI invocation enables both the quick
-latency/output profile and the optional load and idle-resource profiles.
+checked by the corresponding profile. CI hard-gates the quick latency/output
+and idle-resource profiles on both platforms and the fixed-rate load profile
+on Linux; macOS records the same load profile as cross-platform evidence.
 
 | Metric | Ideal target | Regression redline | Current automation |
 | --- | ---: | ---: | --- |
@@ -35,7 +36,7 @@ latency/output profile and the optional load and idle-resource profiles.
 | Eight-module total idle RSS | ≤ 48 MiB | > 80 MiB | CI: 8 slots |
 | CPU with no events | ~0% | > 0.2% per module | CI resource gate |
 | Stdout per event | ≤ 8 KiB | > 32 KiB | Enforced |
-| 1/4/8 load | 1,000 events/min | Drops or >100 ms | CI gate |
+| 1/4/8 load | 1,000 events/min | Drops or >100 ms | Linux gate; macOS report |
 | Fault isolation | ≤ 3 invalid | Core impact | Driver tests; core-owned |
 
 The automated limits are therefore startup p95 ≤ 150 ms, event p95 ≤ 50 ms,
@@ -44,8 +45,10 @@ event p99 ≤ 100 ms, maximum event stdout ≤ 32,768 bytes, per-slot peak idle 
 CPU ≤ 0.2% of one core. Resource limits are applied when `--idle-resources` is
 enabled. The `--load` profile additionally requires zero drops, complete
 fan-out, p95/p99 within the 50/100-ms event limits, and zero source responses
-past 100 ms. CI enables both optional profiles. The ideal values are not
-relaxed merely because automation gates the redlines.
+past 100 ms. CI enables the idle-resource profile on both platforms. It
+hard-gates fixed-rate load on Linux and measures the identical workload on
+macOS without converting hosted-runner scheduling stalls into a weaker budget.
+The ideal values are not relaxed merely because automation gates the redlines.
 
 The 32,768-byte stdout value is the policy redline recorded in Issue #7. TNT's
 transport is slightly stricter: each of at most eight response records has a
@@ -96,7 +99,8 @@ benchmark. It also works after static checks delegated through `--checker` or
 `TNT_MODULES_BENCHMARK` can substitute the benchmark harness for testing.
 
 `make perf-check` alone keeps the same quick latency/output gate. Include load
-and idle resources when a local run should match CI's enforced scope:
+and idle resources when a local target-host run should enforce the complete
+repository-owned scope:
 
 ```sh
 make perf-check PERF_ARGS="--load --idle-resources --idle-seconds 10"
@@ -291,19 +295,26 @@ cross-platform evidence for each run.
 
 ## CI reports
 
-GitHub Actions continues to run `make perf-check` directly after the test suite
-instead of routing its artifact-producing run through checker `--performance`.
-It runs on both
-`ubuntu-24.04` and `macos-latest`. Each job writes `module-performance.json`
-while enabling the 1/4/8-slot fixed-rate load and the eight-slot, ten-second
-idle resource profile, and uploads it even when the budget step fails:
+GitHub Actions continues to run the benchmark directly after the test suite
+instead of routing its artifact-producing runs through checker
+`--performance`. On both `ubuntu-24.04` and `macos-latest`, the
+`module-performance.json` report hard-gates startup/event latency, output, and
+the eight-slot, ten-second idle-resource profile. Each job also writes
+`module-load.json` with the same 1,000-events/minute, 1/4/8-slot workload.
+Linux hard-gates that load report; macOS keeps it informational because the
+hosted virtual runner does not provide a stable target-equivalent scheduling
+environment. A macOS budget miss remains explicit as `pass: false` in the
+artifact rather than weakening the 50/100-ms or zero-drop limits. Both reports
+are uploaded even when an enforced step fails, under:
 
 - `module-performance-ubuntu-24.04`
 - `module-performance-macos-latest`
 
 These artifacts are the current per-run baselines for regression comparison.
-The hosted runners record their environment in the report, but they do not
-emulate the 1-vCPU, 128-MiB target host.
+The hosted runners record their environment in each report, but they do not
+emulate the 1-vCPU, 128-MiB target host. Release or target-device qualification
+therefore still runs the complete local `--check --load --idle-resources`
+profile; an informational hosted-macOS result is not reported as a pass.
 
 ## Current scope and known gaps
 

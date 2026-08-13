@@ -105,7 +105,8 @@ make perf-load
 make perf-resources
 ```
 
-To match CI's complete enforced scope and preserve it as JSON:
+To enforce every repository-owned budget in one local run and preserve it as
+JSON:
 
 ```sh
 make perf-check PERF_ARGS="--load --idle-resources \

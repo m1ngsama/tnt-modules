@@ -14,13 +14,14 @@
   completion, so the benchmark measures command handlers rather than no-op
   paths.
 - Added benchmark regression tests and Linux/macOS CI budget checks. CI retains
-  `module-performance.json` as a platform-specific artifact even when a budget
-  check fails.
+  platform-specific `module-performance.json` and `module-load.json` reports
+  even when an enforced budget check fails.
 - Added a bounded fixed-rate load profile for 1, 4, and 8 module slots at the
   1,000 source-events/minute target. It reports fan-out completion, drops,
   throughput, queue depth, deadline misses, per-slot latency, and aggregate
-  source p50/p95/p99; CI rejects dropped or over-budget command events, and a
-  slow-slot regression proves that a healthy peer continues independently.
+  source p50/p95/p99; Linux CI rejects dropped or over-budget command events,
+  macOS records the identical profile without relaxing its reported budgets,
+  and a slow-slot regression proves that a healthy peer continues independently.
   The driver broadcasts one shared, round-robin command corpus to every slot,
   matching TNT event delivery instead of synthesizing simultaneous unrelated
   slash commands.
