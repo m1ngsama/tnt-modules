@@ -310,7 +310,7 @@ records = [
     json.loads(line)
     for line in log_path.read_text(encoding="utf-8").splitlines()
 ]
-expected = ["--check", "--idle-resources"]
+expected = ["--check", "--idle-resources", "--load"]
 for path in expected_paths:
     expected.extend(["--module-dir", path])
 if records != [expected]:
@@ -343,7 +343,7 @@ for base_name in ("examples", "modules"):
         expected_paths.extend(
             str(path) for path in sorted(path for path in base.iterdir() if path.is_dir())
         )
-expected = ["--check", "--idle-resources"]
+expected = ["--check", "--idle-resources", "--load"]
 for path in expected_paths:
     expected.extend(["--module-dir", path])
 records = [

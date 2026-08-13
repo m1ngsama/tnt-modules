@@ -307,6 +307,51 @@ class BenchmarkModulesTests(unittest.TestCase):
         entrypoint.chmod(0o755)
         return module_dir
 
+    def write_event_fault_module(self, name: str, fault: str) -> pathlib.Path:
+        if fault == "invalid":
+            event_program = "print('not-json', flush=True)"
+        elif fault == "crash":
+            event_program = "raise SystemExit(9)"
+        elif fault == "flood":
+            event_program = textwrap.dedent(
+                """\
+                for index in range(8):
+                    print(json.dumps({
+                        "type": "message.create",
+                        "plain_text": f"flood {index}",
+                    }), flush=True)
+                """
+            )
+        else:
+            raise ValueError(f"unknown event fault: {fault}")
+
+        module_dir = self.write_module(name)
+        entrypoint = module_dir / "module.py"
+        entrypoint.write_text(
+            textwrap.dedent(
+                f"""\
+                #!{sys.executable}
+                import json
+                import sys
+
+                for line in sys.stdin:
+                    request = json.loads(line)
+                    if request.get("type") == "handshake":
+                        response = {{
+                            "type": "handshake.ok",
+                            "protocol": "tnt.module.v1",
+                            "module": {{"name": {name!r}, "version": "0.1.0"}},
+                        }}
+                        print(json.dumps(response, separators=(",", ":")), flush=True)
+                    elif request.get("type") == "message.created":
+                        {textwrap.indent(event_program, '                        ').lstrip()}
+                """
+            ),
+            encoding="utf-8",
+        )
+        entrypoint.chmod(0o755)
+        return module_dir
+
     def write_signal_cleanup_module(self, name: str) -> pathlib.Path:
         """Write a module with a SIGTERM-ignoring process-group child."""
 
@@ -475,7 +520,11 @@ class BenchmarkModulesTests(unittest.TestCase):
 
         completed = self.run_benchmark(module_dir, report_path)
 
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"stdout={completed.stdout}\nstderr={completed.stderr}",
+        )
         self.assertIn("TNT module benchmark", completed.stdout)
         self.assertIn("fast-module", completed.stdout)
         report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -488,6 +537,11 @@ class BenchmarkModulesTests(unittest.TestCase):
         self.assertEqual(report["configuration"]["startup_samples"], 2)
         self.assertEqual(report["configuration"]["warmups"], 5)
         self.assertFalse(report["configuration"]["idle_resources"]["enabled"])
+        self.assertFalse(report["configuration"]["load"]["enabled"])
+        self.assertEqual(report["configuration"]["load"]["topologies"], [1, 4, 8])
+        self.assertEqual(
+            report["configuration"]["load"]["events_per_minute"], 1_000.0
+        )
         self.assertEqual(report["budgets"]["startup_p95_ms"], 150.0)
         self.assertEqual(report["budgets"]["event_output_bytes"], 32_768)
         self.assertEqual(report["budgets"]["module_idle_rss_kib"], 16_384)
@@ -520,6 +574,7 @@ class BenchmarkModulesTests(unittest.TestCase):
         self.assertIsInstance(report["pass"], bool)
         self.assertIsNone(report["error"])
         self.assertEqual(report["idle_resources"]["status"], "not_requested")
+        self.assertEqual(report["load"]["status"], "not_requested")
         self.assertIn("transport hard limits", completed.stdout)
 
     def test_check_fails_for_slow_warm_events(self) -> None:
@@ -539,6 +594,136 @@ class BenchmarkModulesTests(unittest.TestCase):
             module["failures"],
         )
         self.assertIn("overall: FAIL (enforced)", completed.stdout)
+
+    def test_fixed_rate_load_reports_one_and_four_slot_topologies(self) -> None:
+        module_dir = self.write_module("load-module")
+        report_path = self.state_dir / "load-report.json"
+
+        completed = self.run_benchmark(
+            module_dir,
+            report_path,
+            "--load",
+            "--load-topologies",
+            "1,4",
+            "--load-events-per-minute",
+            "300",
+            "--load-seconds",
+            "0.6",
+        )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"stdout={completed.stdout}\nstderr={completed.stderr}",
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertTrue(report["configuration"]["load"]["enabled"])
+        self.assertEqual(report["configuration"]["load"]["topologies"], [1, 4])
+        load = report["load"]
+        self.assertEqual(load["status"], "measured")
+        self.assertTrue(load["pass"])
+        self.assertEqual(
+            [topology["instances"] for topology in load["topologies"]],
+            [1, 4],
+        )
+        for topology in load["topologies"]:
+            self.assertEqual(topology["offered_source_events"], 3)
+            self.assertEqual(topology["completed_source_events"], 3)
+            self.assertEqual(topology["dropped_source_events"], 0)
+            self.assertEqual(topology["queue_capacity_per_slot"], 1)
+            self.assertLessEqual(topology["queue_depth_max"], 1)
+            self.assertEqual(
+                topology["completed_deliveries"],
+                topology["offered_deliveries"],
+            )
+            self.assertEqual(topology["dropped_deliveries"], 0)
+            self.assertAlmostEqual(
+                topology["source_throughput_events_per_minute"],
+                300.0,
+            )
+        self.assertEqual(
+            [item["reused"] for item in load["topologies"][1]["assignments"]],
+            [False, True, True, True],
+        )
+        self.assertIn("fixed-rate load: 300.000 source events/min", completed.stdout)
+
+    def test_fixed_rate_load_detects_bounded_queue_overload(self) -> None:
+        module_dir = self.write_module("overloaded-module", event_delay=0.080)
+        module_spec = benchmark_module.load_module(module_dir)
+
+        result = benchmark_module.benchmark_load(
+            [module_spec],
+            topologies=(1,),
+            events_per_minute=1_000.0,
+            duration_seconds=0.60,
+            warmups=5,
+            startup_timeout_seconds=5.0,
+            event_timeout_seconds=2.0,
+        )
+
+        self.assertFalse(result["pass"])
+        topology = result["topologies"][0]
+        self.assertGreater(topology["dropped_source_events"], 0)
+        self.assertGreater(topology["dropped_deliveries"], 0)
+        self.assertLess(
+            topology["completed_source_events"],
+            topology["offered_source_events"],
+        )
+        self.assertTrue(
+            any("completed" in failure for failure in topology["failures"]),
+            topology["failures"],
+        )
+
+    def test_load_keeps_healthy_slot_running_when_peer_overloads(self) -> None:
+        slow_dir = self.write_module("slow-load-module", event_delay=0.080)
+        fast_dir = self.write_module("fast-load-module")
+        modules = [
+            benchmark_module.load_module(slow_dir),
+            benchmark_module.load_module(fast_dir),
+        ]
+
+        result = benchmark_module.benchmark_load(
+            modules,
+            topologies=(2,),
+            events_per_minute=1_000.0,
+            duration_seconds=0.60,
+            warmups=5,
+            startup_timeout_seconds=5.0,
+            event_timeout_seconds=2.0,
+        )
+
+        self.assertFalse(result["pass"])
+        slow_slot, fast_slot = result["topologies"][0]["slots"]
+        self.assertGreater(slow_slot["dropped_events"], 0)
+        self.assertEqual(fast_slot["offered_events"], 10)
+        self.assertEqual(fast_slot["completed_events"], 10)
+        self.assertEqual(fast_slot["dropped_events"], 0)
+
+    def test_event_fault_corpus_rejects_invalid_crash_and_flood(self) -> None:
+        cases = (
+            ("invalid", "response was not valid JSON"),
+            ("crash", "module exited"),
+            ("flood", "event.ok not received within 8 records"),
+        )
+        for fault, expected_error in cases:
+            with self.subTest(fault=fault):
+                module_dir = self.write_event_fault_module(
+                    f"{fault}-event-module", fault
+                )
+                report_path = self.state_dir / f"{fault}-event-report.json"
+
+                completed = self.run_benchmark(
+                    module_dir,
+                    report_path,
+                    "--event-timeout",
+                    "0.1",
+                )
+
+                self.assertEqual(completed.returncode, 2, completed.stdout)
+                self.assertIn(expected_error, completed.stderr)
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                self.assertFalse(report["pass"])
+                self.assertIn(expected_error, report["error"])
 
     def test_message_create_without_event_ok_times_out(self) -> None:
         module_dir = self.write_module("unterminated-module", terminate_event=False)
@@ -802,6 +987,109 @@ class BenchmarkModulesTests(unittest.TestCase):
                         except ProcessLookupError:
                             pass
 
+    def test_sigterm_during_load_cleans_process_group(self) -> None:
+        module_dir = self.write_signal_cleanup_module("load-signal-cleanup-module")
+        report_path = self.state_dir / "load-signal-cleanup-report.json"
+        process_groups_path = module_dir / "process-groups.txt"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(BENCHMARK),
+                "--module-dir",
+                str(module_dir),
+                "--samples",
+                "1",
+                "--startup-samples",
+                "1",
+                "--warmups",
+                "5",
+                "--load",
+                "--load-topologies",
+                "1",
+                "--load-seconds",
+                "30",
+                "--json-output",
+                str(report_path),
+            ],
+            cwd=str(ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        load_process_group: int | None = None
+
+        try:
+            launch_deadline = time.monotonic() + 8.0
+            launches: list[list[int]] = []
+            while time.monotonic() < launch_deadline:
+                if process_groups_path.exists():
+                    launches = [
+                        [int(value) for value in line.split()]
+                        for line in process_groups_path.read_text(
+                            encoding="ascii"
+                        ).splitlines()
+                        if line.strip()
+                    ]
+                if len(launches) >= 3:
+                    break
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate()
+                    self.fail(
+                        "benchmark exited before load fixture started: "
+                        f"status={process.returncode}, stdout={stdout!r}, "
+                        f"stderr={stderr!r}"
+                    )
+                time.sleep(0.01)
+            self.assertGreaterEqual(len(launches), 3)
+            load_process_group, load_child = launches[-1]
+            self.assertTrue(self.process_group_exists(load_process_group))
+            self.assertTrue(self.process_exists(load_child))
+
+            # Let handshake, warmups, and the first scheduled load events begin.
+            time.sleep(0.25)
+            self.assertIsNone(process.poll())
+            process.send_signal(signal.SIGTERM)
+            _stdout, stderr = process.communicate(timeout=6.0)
+            self.assertEqual(process.returncode, 128 + signal.SIGTERM, stderr)
+            self.assertIn("interrupted by SIGTERM", stderr)
+
+            cleanup_deadline = time.monotonic() + 3.0
+            while (
+                self.process_group_exists(load_process_group)
+                and time.monotonic() < cleanup_deadline
+            ):
+                time.sleep(0.01)
+            self.assertFalse(
+                self.process_group_exists(load_process_group),
+                f"module process group {load_process_group} survived SIGTERM cleanup",
+            )
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertFalse(report["pass"])
+            self.assertEqual(report["error"], "interrupted by SIGTERM")
+            self.assertEqual(report["load"]["status"], "error")
+            self.assertFalse(report["load"]["pass"])
+            self.assertEqual(report["load"]["error"], "interrupted by SIGTERM")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if process_groups_path.exists():
+                for line in process_groups_path.read_text(
+                    encoding="ascii"
+                ).splitlines():
+                    values = line.split()
+                    if not values:
+                        continue
+                    process_group = int(values[0])
+                    if self.process_group_exists(process_group):
+                        try:
+                            os.killpg(process_group, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
     def test_process_group_cleanup_tolerates_esrch_and_eperm(self) -> None:
         cases = (
             (OSError(errno.ESRCH, "missing group"), False),
@@ -1033,6 +1321,10 @@ class BenchmarkModulesTests(unittest.TestCase):
             ("--idle-settle", "-0.1"),
             ("--idle-seconds", "0"),
             ("--resource-sample-interval", "0"),
+            ("--load-topologies", "0,4"),
+            ("--load-topologies", "1,1"),
+            ("--load-events-per-minute", "0"),
+            ("--load-seconds", "0"),
         )
         for option, value in invalid_arguments:
             with self.subTest(option=option, value=value):

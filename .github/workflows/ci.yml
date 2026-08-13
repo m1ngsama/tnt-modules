@@ -24,7 +24,7 @@ jobs:
       - name: Enforce module performance budgets
         run: >-
           make perf-check
-          PERF_ARGS="--idle-resources --idle-seconds 10
+          PERF_ARGS="--idle-resources --idle-seconds 10 --load
           --json-output module-performance.json"
       - name: Upload performance report
         if: always()

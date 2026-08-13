@@ -17,11 +17,13 @@ import math
 import os
 import pathlib
 import platform
+import queue
 import selectors
 import signal
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -37,6 +39,12 @@ DEFAULT_IDLE_INSTANCES = 8
 DEFAULT_IDLE_SETTLE_SECONDS = 0.5
 DEFAULT_IDLE_SECONDS = 10.0
 DEFAULT_RESOURCE_SAMPLE_INTERVAL_SECONDS = 0.25
+DEFAULT_LOAD_TOPOLOGIES = (1, 4, 8)
+DEFAULT_LOAD_EVENTS_PER_MINUTE = 1_000.0
+DEFAULT_LOAD_SECONDS = 6.0
+LOAD_START_GRACE_SECONDS = 0.1
+LOAD_QUEUE_CAPACITY_PER_SLOT = 1
+MAX_LOAD_EVENTS_PER_TOPOLOGY = 10_000
 PROCESS_STOP_GRACE_SECONDS = 0.25
 PROCESS_KILL_WAIT_SECONDS = 1.0
 PROCESS_GROUP_POLL_SECONDS = 0.01
@@ -149,6 +157,28 @@ class IdleResourceSlot:
     cpu_latest_seconds: dict[int, float] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class LoadEventMeasurement:
+    sequence: int
+    slot_latency_ms: float
+    source_latency_ms: float
+    output_bytes: int
+
+
+@dataclass
+class LoadSlot:
+    slot: int
+    spec: ModuleSpec
+    running: RunningModule
+    work_queue: queue.Queue[int] = field(
+        default_factory=lambda: queue.Queue(maxsize=LOAD_QUEUE_CAPACITY_PER_SLOT)
+    )
+    measurements: list[LoadEventMeasurement] = field(default_factory=list)
+    dropped_sequences: list[int] = field(default_factory=list)
+    queue_depth_max: int = 0
+    error: BaseException | None = None
+
+
 def positive_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -190,6 +220,22 @@ def nonnegative_float(value: str) -> float:
         raise argparse.ArgumentTypeError("must be a number") from exc
     if not math.isfinite(parsed) or parsed < 0:
         raise argparse.ArgumentTypeError("must be zero or greater")
+    return parsed
+
+
+def load_topologies(value: str) -> tuple[int, ...]:
+    try:
+        parsed = tuple(int(item) for item in value.split(","))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "must be a comma-separated list of integers from 1 through 8"
+        ) from exc
+    if not parsed or any(item < 1 or item > 8 for item in parsed):
+        raise argparse.ArgumentTypeError(
+            "must be a comma-separated list of integers from 1 through 8"
+        )
+    if len(parsed) != len(set(parsed)):
+        raise argparse.ArgumentTypeError("must not contain duplicate topologies")
     return parsed
 
 
@@ -866,6 +912,361 @@ def benchmark_events(
         return results
 
 
+def run_load_slot(
+    slot: LoadSlot,
+    *,
+    start_at: float,
+    interval_seconds: float,
+    event_timeout_seconds: float,
+    sequence_base: int,
+    producer_done: threading.Event,
+    stop_event: threading.Event,
+) -> None:
+    """Consume one module's bounded queue with at most one in-flight event."""
+
+    try:
+        while True:
+            if stop_event.is_set():
+                return
+            try:
+                sequence = slot.work_queue.get(timeout=0.02)
+            except queue.Empty:
+                if producer_done.is_set():
+                    return
+                continue
+
+            try:
+                if stop_event.is_set():
+                    return
+                scheduled_at = start_at + (sequence * interval_seconds)
+                measurement = perform_event(
+                    slot.running,
+                    slot.spec,
+                    sequence_base + sequence,
+                    event_timeout_seconds,
+                )
+                completed_at = time.monotonic()
+                slot.measurements.append(
+                    LoadEventMeasurement(
+                        sequence=sequence,
+                        slot_latency_ms=measurement.latency_ms,
+                        source_latency_ms=(completed_at - scheduled_at) * 1_000.0,
+                        output_bytes=measurement.output_bytes,
+                    )
+                )
+            finally:
+                slot.work_queue.task_done()
+    except BaseException as exc:
+        slot.error = exc
+        stop_event.set()
+
+
+def load_slot_report(
+    slot: LoadSlot,
+    *,
+    event_count: int,
+    duration_seconds: float,
+) -> dict[str, Any]:
+    slot_latencies = [item.slot_latency_ms for item in slot.measurements]
+    source_latencies = [item.source_latency_ms for item in slot.measurements]
+    output_bytes = [item.output_bytes for item in slot.measurements]
+    deadline_misses = sum(
+        latency > EVENT_P99_BUDGET_MS for latency in source_latencies
+    )
+    failures: list[str] = []
+    if slot.dropped_sequences:
+        failures.append(f"dropped {len(slot.dropped_sequences)} offered events")
+    if len(slot.measurements) != event_count:
+        failures.append(
+            f"completed {len(slot.measurements)} of {event_count} offered events"
+        )
+    if deadline_misses:
+        failures.append(
+            f"missed the {EVENT_P99_BUDGET_MS:.0f} ms deadline "
+            f"for {deadline_misses} events"
+        )
+
+    latency_summary = numeric_summary(slot_latencies)
+    source_latency_summary = numeric_summary(source_latencies)
+    output_summary = numeric_summary(output_bytes)
+    if latency_summary is not None:
+        if latency_summary["p95"] > EVENT_P95_BUDGET_MS:
+            failures.append(
+                f"load event p95 {latency_summary['p95']:.3f} ms > "
+                f"{EVENT_P95_BUDGET_MS:.3f} ms"
+            )
+        if latency_summary["p99"] > EVENT_P99_BUDGET_MS:
+            failures.append(
+                f"load event p99 {latency_summary['p99']:.3f} ms > "
+                f"{EVENT_P99_BUDGET_MS:.3f} ms"
+            )
+    if output_summary is not None and output_summary["max"] > EVENT_OUTPUT_BUDGET_BYTES:
+        failures.append(
+            f"load event output {output_summary['max']} bytes > "
+            f"{EVENT_OUTPUT_BUDGET_BYTES} bytes"
+        )
+
+    return {
+        "slot": slot.slot,
+        "module": slot.spec.name,
+        "version": slot.spec.version,
+        "offered_events": event_count,
+        "completed_events": len(slot.measurements),
+        "dropped_events": len(slot.dropped_sequences),
+        "deadline_misses": deadline_misses,
+        "throughput_events_per_minute": (
+            len(slot.measurements) * 60.0 / duration_seconds
+        ),
+        "queue_depth_max": slot.queue_depth_max,
+        "slot_latency_ms": latency_summary,
+        "source_latency_ms": source_latency_summary,
+        "output_bytes": output_summary,
+        "pass": not failures,
+        "failures": failures,
+    }
+
+
+def benchmark_load_topology(
+    modules: Sequence[ModuleSpec],
+    *,
+    instances: int,
+    events_per_minute: float,
+    duration_seconds: float,
+    warmups: int,
+    startup_timeout_seconds: float,
+    event_timeout_seconds: float,
+) -> dict[str, Any]:
+    """Fan one fixed-rate source stream out to 1..8 independent modules."""
+
+    if not modules:
+        raise BenchmarkError("load benchmark requires at least one module")
+    interval_seconds = 60.0 / events_per_minute
+    event_count = max(
+        1,
+        int(math.floor((duration_seconds + 1e-12) / interval_seconds)),
+    )
+    if event_count > MAX_LOAD_EVENTS_PER_TOPOLOGY:
+        raise BenchmarkError(
+            f"load profile offers {event_count} events per topology; "
+            f"maximum is {MAX_LOAD_EVENTS_PER_TOPOLOGY}"
+        )
+    measured_duration_seconds = event_count * interval_seconds
+    assignments = [modules[index % len(modules)] for index in range(instances)]
+    slots: list[LoadSlot] = []
+    threads: list[threading.Thread] = []
+    producer_done = threading.Event()
+    stop_event = threading.Event()
+
+    with contextlib.ExitStack() as stack:
+        for index, spec in enumerate(assignments, start=1):
+            running = stack.enter_context(RunningModule(spec))
+            perform_handshake(running, spec, startup_timeout_seconds)
+            for warmup_sequence in range(warmups):
+                perform_event(
+                    running,
+                    spec,
+                    90_000_000 + (index * 10_000) + warmup_sequence,
+                    event_timeout_seconds,
+                )
+            running.assert_idle_stdout(f"load slot {index} ({spec.name})")
+            slots.append(LoadSlot(slot=index, spec=spec, running=running))
+
+        start_at = time.monotonic() + LOAD_START_GRACE_SECONDS
+        for slot in slots:
+            thread = threading.Thread(
+                target=run_load_slot,
+                kwargs={
+                    "slot": slot,
+                    "start_at": start_at,
+                    "interval_seconds": interval_seconds,
+                    "event_timeout_seconds": event_timeout_seconds,
+                    "sequence_base": 100_000_000 + (instances * 1_000_000),
+                    "producer_done": producer_done,
+                    "stop_event": stop_event,
+                },
+                name=f"tnt-load-slot-{slot.slot}",
+            )
+            threads.append(thread)
+            thread.start()
+
+        try:
+            for sequence in range(event_count):
+                scheduled_at = start_at + (sequence * interval_seconds)
+                if stop_event.wait(max(0.0, scheduled_at - time.monotonic())):
+                    break
+                for slot in slots:
+                    try:
+                        slot.work_queue.put_nowait(sequence)
+                    except queue.Full:
+                        slot.dropped_sequences.append(sequence)
+                    else:
+                        slot.queue_depth_max = max(
+                            slot.queue_depth_max,
+                            slot.work_queue.qsize(),
+                        )
+            producer_done.set()
+
+            completion_deadline = (
+                start_at
+                + measured_duration_seconds
+                + (2.0 * event_timeout_seconds)
+                + 1.0
+            )
+            while any(thread.is_alive() for thread in threads):
+                for thread in threads:
+                    thread.join(timeout=0.02)
+                if any(slot.error is not None for slot in slots):
+                    stop_event.set()
+                if time.monotonic() >= completion_deadline:
+                    raise BenchmarkError(
+                        f"{instances}-slot load workers did not finish within deadline"
+                    )
+        finally:
+            stop_event.set()
+            producer_done.set()
+            join_deadline = time.monotonic() + event_timeout_seconds + 1.0
+            for thread in threads:
+                thread.join(timeout=max(0.0, join_deadline - time.monotonic()))
+            if any(thread.is_alive() for thread in threads):
+                raise BenchmarkError(
+                    f"{instances}-slot load workers did not stop within deadline"
+                )
+
+        for slot in slots:
+            if slot.error is not None:
+                if isinstance(slot.error, BenchmarkError):
+                    raise slot.error
+                raise BenchmarkError(
+                    f"load slot {slot.slot} ({slot.spec.name}) failed: {slot.error}"
+                ) from slot.error
+
+    slot_reports = [
+        load_slot_report(
+            slot,
+            event_count=event_count,
+            duration_seconds=measured_duration_seconds,
+        )
+        for slot in slots
+    ]
+    completed_by_slot = [
+        {item.sequence: item for item in slot.measurements} for slot in slots
+    ]
+    complete_sequences = [
+        sequence
+        for sequence in range(event_count)
+        if all(sequence in completed for completed in completed_by_slot)
+    ]
+    source_latencies = [
+        max(completed[sequence].source_latency_ms for completed in completed_by_slot)
+        for sequence in complete_sequences
+    ]
+    source_latency_summary = numeric_summary(source_latencies)
+    source_deadline_misses = sum(
+        latency > EVENT_P99_BUDGET_MS for latency in source_latencies
+    )
+    completed_source_events = len(complete_sequences)
+    failures: list[str] = []
+    if completed_source_events != event_count:
+        failures.append(
+            f"completed {completed_source_events} of {event_count} source events"
+        )
+    if source_deadline_misses:
+        failures.append(
+            f"source fan-out missed the {EVENT_P99_BUDGET_MS:.0f} ms deadline "
+            f"for {source_deadline_misses} events"
+        )
+    if source_latency_summary is not None:
+        if source_latency_summary["p95"] > EVENT_P95_BUDGET_MS:
+            failures.append(
+                f"source p95 {source_latency_summary['p95']:.3f} ms > "
+                f"{EVENT_P95_BUDGET_MS:.3f} ms"
+            )
+        if source_latency_summary["p99"] > EVENT_P99_BUDGET_MS:
+            failures.append(
+                f"source p99 {source_latency_summary['p99']:.3f} ms > "
+                f"{EVENT_P99_BUDGET_MS:.3f} ms"
+            )
+
+    assignments_report: list[dict[str, Any]] = []
+    seen_assignments: set[str] = set()
+    for index, spec in enumerate(assignments, start=1):
+        assignments_report.append(
+            {
+                "slot": index,
+                "module": spec.name,
+                "version": spec.version,
+                "reused": spec.name in seen_assignments,
+            }
+        )
+        seen_assignments.add(spec.name)
+
+    failures.extend(
+        f"slot {slot['slot']} ({slot['module']}): {failure}"
+        for slot in slot_reports
+        for failure in slot["failures"]
+    )
+    return {
+        "instances": instances,
+        "assignments": assignments_report,
+        "configured_duration_seconds": duration_seconds,
+        "measured_duration_seconds": measured_duration_seconds,
+        "arrival_interval_ms": interval_seconds * 1_000.0,
+        "offered_source_events": event_count,
+        "completed_source_events": completed_source_events,
+        "dropped_source_events": event_count - completed_source_events,
+        "offered_deliveries": event_count * instances,
+        "completed_deliveries": sum(
+            slot["completed_events"] for slot in slot_reports
+        ),
+        "dropped_deliveries": sum(slot["dropped_events"] for slot in slot_reports),
+        "source_throughput_events_per_minute": (
+            completed_source_events * 60.0 / measured_duration_seconds
+        ),
+        "queue_capacity_per_slot": LOAD_QUEUE_CAPACITY_PER_SLOT,
+        "queue_depth_max": max(slot["queue_depth_max"] for slot in slot_reports),
+        "source_deadline_misses": source_deadline_misses,
+        "source_latency_ms": source_latency_summary,
+        "slots": slot_reports,
+        "pass": not failures,
+        "failures": failures,
+    }
+
+
+def benchmark_load(
+    modules: Sequence[ModuleSpec],
+    *,
+    topologies: Sequence[int],
+    events_per_minute: float,
+    duration_seconds: float,
+    warmups: int,
+    startup_timeout_seconds: float,
+    event_timeout_seconds: float,
+) -> dict[str, Any]:
+    topology_reports = [
+        benchmark_load_topology(
+            modules,
+            instances=instances,
+            events_per_minute=events_per_minute,
+            duration_seconds=duration_seconds,
+            warmups=warmups,
+            startup_timeout_seconds=startup_timeout_seconds,
+            event_timeout_seconds=event_timeout_seconds,
+        )
+        for instances in topologies
+    ]
+    failures = [
+        f"{topology['instances']}-slot: {failure}"
+        for topology in topology_reports
+        for failure in topology["failures"]
+    ]
+    return {
+        "status": "measured",
+        "topologies": topology_reports,
+        "pass": not failures,
+        "failures": failures,
+    }
+
+
 def capture_idle_resource_sample(
     sampler: LinuxProcResourceSampler | DarwinPsResourceSampler,
     slots: Sequence[IdleResourceSlot],
@@ -1099,6 +1500,20 @@ def nearest_rank(values: Sequence[float], percentile: float) -> float:
     return ordered[index]
 
 
+def numeric_summary(values: Sequence[int | float]) -> dict[str, int | float] | None:
+    if not values:
+        return None
+    return {
+        "samples": len(values),
+        "min": min(values),
+        "max": max(values),
+        "mean": statistics.fmean(values),
+        "p50": nearest_rank(values, 50.0),
+        "p95": nearest_rank(values, 95.0),
+        "p99": nearest_rank(values, 99.0),
+    }
+
+
 def measurement_summary(measurements: Sequence[Measurement]) -> dict[str, Any]:
     latencies = [item.latency_ms for item in measurements]
     output = [item.output_bytes for item in measurements]
@@ -1288,6 +1703,11 @@ def print_human_report(report: dict[str, Any], enforce: bool) -> None:
             "idle budgets: module RSS <= 16384 KiB; exact 8-slot RSS <= "
             "81920 KiB; module CPU <= 0.2% of one core"
         )
+    if config["load"]["enabled"]:
+        print(
+            "load budgets: zero drops; complete fan-out; source/event p95 <= "
+            "50 ms; p99 and every source response <= 100 ms"
+        )
     print()
     print(
         f"{'module':<20} {'startup p50/p95/p99 ms':<29} "
@@ -1353,6 +1773,40 @@ def print_human_report(report: dict[str, Any], enforce: bool) -> None:
     elif idle_resources["status"] == "error":
         print()
         print(f"idle resources: ERROR: {idle_resources['error']}")
+
+    load = report["load"]
+    if load["status"] == "measured":
+        print()
+        print(
+            "fixed-rate load: "
+            f"{config['load']['events_per_minute']:.3f} source events/min; "
+            "one pending event per slot"
+        )
+        print(
+            f"{'topology':<10} {'source done/offered':<22} "
+            f"{'deliveries done/offered':<25} {'source p95/p99 ms':<22} result"
+        )
+        for topology in load["topologies"]:
+            latency = topology["source_latency_ms"]
+            latency_text = (
+                f"{latency['p95']:.3f}/{latency['p99']:.3f}"
+                if latency is not None
+                else "n/a"
+            )
+            print(
+                f"{topology['instances']:<10} "
+                f"{topology['completed_source_events']}/"
+                f"{topology['offered_source_events']:<20} "
+                f"{topology['completed_deliveries']}/"
+                f"{topology['offered_deliveries']:<22} "
+                f"{latency_text:<22} "
+                f"{'PASS' if topology['pass'] else 'FAIL'}"
+            )
+            for failure in topology["failures"]:
+                print(f"  - {failure}")
+    elif load["status"] == "error":
+        print()
+        print(f"fixed-rate load: ERROR: {load['error']}")
     print()
     qualifier = "enforced" if enforce else "informational; use --check to enforce"
     print(f"overall: {'PASS' if report['pass'] else 'FAIL'} ({qualifier})")
@@ -1360,7 +1814,10 @@ def print_human_report(report: dict[str, Any], enforce: bool) -> None:
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark TNT module handshake and warm-event latency."
+        description=(
+            "Benchmark TNT module startup, warm events, bounded load, and "
+            "idle resources."
+        )
     )
     parser.add_argument(
         "--samples",
@@ -1400,6 +1857,32 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=DEFAULT_EVENT_TIMEOUT_SECONDS,
         metavar="SECONDS",
         help="hard timeout for each complete event response (default: 2.0)",
+    )
+    parser.add_argument(
+        "--load",
+        action="store_true",
+        help="run bounded fixed-rate source-event load across 1/4/8 slots",
+    )
+    parser.add_argument(
+        "--load-topologies",
+        type=load_topologies,
+        default=DEFAULT_LOAD_TOPOLOGIES,
+        metavar="COUNTS",
+        help="comma-separated load slot counts, each 1..8 (default: 1,4,8)",
+    )
+    parser.add_argument(
+        "--load-events-per-minute",
+        type=positive_float,
+        default=DEFAULT_LOAD_EVENTS_PER_MINUTE,
+        metavar="RATE",
+        help="offered source-event rate for load profile (default: 1000)",
+    )
+    parser.add_argument(
+        "--load-seconds",
+        type=positive_float,
+        default=DEFAULT_LOAD_SECONDS,
+        metavar="SECONDS",
+        help="measurement duration per load topology (default: 6.0)",
     )
     parser.add_argument(
         "--idle-resources",
@@ -1443,7 +1926,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="return non-zero when a module exceeds a performance/output budget",
+        help="return non-zero when a selected performance budget is exceeded",
     )
     return parser.parse_args(argv)
 
@@ -1491,9 +1974,28 @@ def run_configured_benchmark(
                 }
                 raise
 
+        if args.load:
+            try:
+                report["load"] = benchmark_load(
+                    modules,
+                    topologies=args.load_topologies,
+                    events_per_minute=args.load_events_per_minute,
+                    duration_seconds=args.load_seconds,
+                    warmups=args.warmups,
+                    startup_timeout_seconds=args.startup_timeout,
+                    event_timeout_seconds=args.event_timeout,
+                )
+            except BenchmarkError as exc:
+                report["load"] = {
+                    "status": "error",
+                    "error": str(exc),
+                    "pass": False,
+                }
+                raise
+
         report["pass"] = all(module["pass"] for module in module_results) and (
             not args.idle_resources or report["idle_resources"]["pass"]
-        )
+        ) and (not args.load or report["load"]["pass"])
         if args.json_output is not None:
             write_json_report(args.json_output, report)
         print_human_report(report, args.check)
@@ -1503,6 +2005,17 @@ def run_configured_benchmark(
     except BenchmarkError as exc:
         report["error"] = str(exc)
         report["pass"] = False
+        for enabled, profile_name in (
+            (args.idle_resources, "idle_resources"),
+            (args.load, "load"),
+        ):
+            profile = report[profile_name]
+            if enabled and profile.get("status") == "not_requested":
+                report[profile_name] = {
+                    "status": "error",
+                    "error": f"not completed: {exc}",
+                    "pass": False,
+                }
         if args.json_output is not None:
             try:
                 write_json_report(args.json_output, report)
@@ -1534,11 +2047,22 @@ def run(argv: Sequence[str]) -> int:
                 "duration_seconds": args.idle_seconds,
                 "sample_interval_seconds": args.resource_sample_interval,
             },
+            "load": {
+                "enabled": args.load,
+                "topologies": list(args.load_topologies),
+                "events_per_minute": args.load_events_per_minute,
+                "duration_seconds_per_topology": args.load_seconds,
+                "queue_capacity_per_slot": LOAD_QUEUE_CAPACITY_PER_SLOT,
+            },
         },
         "budgets": budgets(),
         "transport_limits": transport_limits(),
         "modules": module_results,
         "idle_resources": {
+            "status": "not_requested",
+            "pass": None,
+        },
+        "load": {
             "status": "not_requested",
             "pass": None,
         },
@@ -1567,6 +2091,12 @@ def run(argv: Sequence[str]) -> int:
             and report["idle_resources"].get("status") == "not_requested"
         ):
             report["idle_resources"] = {
+                "status": "error",
+                "error": message,
+                "pass": False,
+            }
+        if args.load and report["load"].get("status") == "not_requested":
+            report["load"] = {
                 "status": "error",
                 "error": message,
                 "pass": False,

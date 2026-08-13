@@ -80,9 +80,10 @@ scripts/check_modules.sh --performance
 ```
 
 That profile invokes the shared benchmark once for all checked directories and
-enforces startup/event latency, output volume, and the eight-slot idle RSS/CPU
-budgets. Explicit module paths, including paths containing spaces, are passed
-to the same benchmark rather than measured by a separate checker implementation.
+enforces startup/event latency, output volume, bounded 1/4/8-slot load, and the
+eight-slot idle RSS/CPU budgets. Explicit module paths, including paths
+containing spaces, are passed to the same benchmark rather than measured by a
+separate checker implementation.
 
 Repository validation and performance tooling require Python 3.10 or newer.
 The packaged modules themselves remain self-contained and require only a POSIX
@@ -96,18 +97,19 @@ make perf
 make perf-check
 ```
 
-Measure the eight-slot idle RSS/CPU profile, or include those resource
-redlines in an enforced run:
+Run the fixed-rate 1/4/8-slot load profile or the eight-slot idle RSS/CPU
+profile:
 
 ```sh
+make perf-load
 make perf-resources
-make perf-check PERF_ARGS="--idle-resources"
 ```
 
-To preserve an enforced run as JSON:
+To match CI's complete enforced scope and preserve it as JSON:
 
 ```sh
-make perf-check PERF_ARGS="--json-output module-performance.json"
+make perf-check PERF_ARGS="--load --idle-resources \
+  --json-output module-performance.json"
 ```
 
 See [PERFORMANCE.md](PERFORMANCE.md) for the target environment, budgets,

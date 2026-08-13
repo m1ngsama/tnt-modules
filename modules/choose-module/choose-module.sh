@@ -5,6 +5,9 @@
 # pipe-separated options chosen at random. All other messages are acknowledged
 # with a no-op so the module stays quiet during normal chat.
 
+LC_ALL=C
+export LC_ALL
+
 json_escape() {
   printf '%s' "$1" | LC_ALL=C awk '
     BEGIN {
@@ -88,11 +91,24 @@ json_string_field() {
     -f ./module_json.awk
 }
 
+seed_base=
+seed_counter=0
+
+next_seed() {
+  if [ -z "$seed_base" ]; then
+    seed_base=$(od -An -N4 -tu4 </dev/urandom 2>/dev/null)
+    while [ "${seed_base# }" != "$seed_base" ]; do seed_base=${seed_base# }; done
+    while [ "${seed_base% }" != "$seed_base" ]; do seed_base=${seed_base% }; done
+    case "$seed_base" in ''|*[!0-9]*) seed_base=$$ ;; esac
+  fi
+  seed_counter=$((seed_counter + 1))
+  event_seed=$(((seed_base + seed_counter) % 2147483646 + 1))
+}
+
 choose_result() {
   options=$1
   sender=$2
-  seed=$(od -An -N4 -tu4 </dev/urandom 2>/dev/null | tr -d ' ')
-  [ -n "$seed" ] || seed=$$
+  seed=$3
 
   # Pass untrusted strings as input records. awk -v assignments interpret
   # backslash escapes, which would turn a literal "\t" or "\n" into controls.
@@ -141,9 +157,15 @@ while IFS= read -r line; do
       "/choose"|"/choose "*)
         sender=$(json_string_field message sender "$line")
         rest=${plain_text#/choose}
-        rest=$(printf '%s' "$rest" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-        result=$(choose_result "$rest" "$sender")
-        bounded_result=$(printf '%s' "$result" | utf8_truncate 1023) || bounded_result=
+        while [ "${rest# }" != "$rest" ]; do rest=${rest# }; done
+        while [ "${rest% }" != "$rest" ]; do rest=${rest% }; done
+        next_seed
+        result=$(choose_result "$rest" "$sender" "$event_seed")
+        if [ "${#result}" -le 1023 ]; then
+          bounded_result=$result
+        else
+          bounded_result=$(printf '%s' "$result" | utf8_truncate 1023) || bounded_result=
+        fi
         if [ -n "$bounded_result" ]; then
           escaped=$(json_escape "$bounded_result")
           printf '{"type":"message.create","plain_text":"%s"}\n' "$escaped"

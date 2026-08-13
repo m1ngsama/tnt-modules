@@ -19,8 +19,8 @@ With no MODULE_DIR arguments, validates module directories under examples/ and
 modules/. If --checker or TNT_MODULE_CHECKER points to TNT's module_check.sh,
 that checker is used. Otherwise this script runs the repository's built-in
 manifest and handshake checks. --performance additionally runs the repository
-benchmark once for all validated directories, enforcing latency, output, and
-eight-slot idle resource budgets.
+benchmark once for all validated directories, enforcing latency, output,
+bounded 1/4/8-slot load, and eight-slot idle resource budgets.
 USAGE
 }
 
@@ -486,7 +486,7 @@ $modules
 EOF
 
     benchmark_status=0
-    "$PYTHON3" "$BENCHMARK" --check --idle-resources "$@" ||
+    "$PYTHON3" "$BENCHMARK" --check --idle-resources --load "$@" ||
         benchmark_status=$?
     if [ "$benchmark_status" -ne 0 ]; then
         echo "check-modules: performance benchmark failed" >&2

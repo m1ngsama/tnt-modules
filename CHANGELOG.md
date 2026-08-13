@@ -16,15 +16,24 @@
 - Added benchmark regression tests and Linux/macOS CI budget checks. CI retains
   `module-performance.json` as a platform-specific artifact even when a budget
   check fails.
+- Added a bounded fixed-rate load profile for 1, 4, and 8 module slots at the
+  1,000 source-events/minute target. It reports fan-out completion, drops,
+  throughput, queue depth, deadline misses, per-slot latency, and aggregate
+  source p50/p95/p99; CI rejects dropped or over-budget command events, and a
+  slow-slot regression proves that a healthy peer continues independently.
+- Added deterministic fault-corpus coverage for slow or unterminated responses,
+  invalid JSON, process crashes, response floods, stubborn descendants, and
+  benchmark interruption without allowing unbounded queues or leaked process
+  groups.
 - Added an eight-slot idle-resource profile that includes child processes,
   gates per-slot and aggregate RSS plus idle CPU, and runs for ten seconds on
   both CI platforms. Added `PERFORMANCE.md` with the Issue #7 target
-  environment, measurement contract, CI reports, and remaining concurrency,
-  sustained-load, and core-isolation gaps.
+  environment, measurement contract, CI reports, and the explicit TNT-core
+  isolation boundary.
 - Added an explicit `scripts/check_modules.sh --performance` profile. After all
   built-in or delegated static checks finish, it invokes the shared benchmark
-  once for every checked directory to enforce latency, output, and eight-slot
-  idle-resource budgets; the default checker remains fast.
+  once for every checked directory to enforce latency, output, bounded load,
+  and eight-slot idle-resource budgets; the default checker remains fast.
 
 ### Fixed
 
@@ -53,6 +62,11 @@
 
 ### Changed
 
+- Moved random seed acquisition out of the reusable modules' per-event hot
+  path, retained a per-process random base with a changing event seed, removed
+  external trimming from roll/choose, and bypassed choose truncation work for
+  already-bounded output. This keeps command behavior intact while preserving
+  latency headroom under the eight-slot load profile.
 - Reworked the built-in module checker to parse manifests and handshakes as
   strict JSON, validate required field types and exact array membership, reject
   duplicate keys and malformed versions, verify handshake name/version against

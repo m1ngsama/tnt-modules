@@ -1,9 +1,10 @@
 # TNT Module Performance
 
-This document records the performance charter and the currently automated
-slice of [Issue #7](https://github.com/m1ngsama/tnt-modules/issues/7). The issue
-is still open: the benchmark enforces startup latency, event latency, and
-stdout volume, but it does not yet cover every resource or isolation budget.
+This document records the performance charter implemented for
+[Issue #7](https://github.com/m1ngsama/tnt-modules/issues/7). The repository
+benchmark enforces startup and event latency, stdout volume, idle resources,
+and bounded 1/4/8-slot load. TNT core scheduling remains a separate system
+boundary, described explicitly below.
 
 ## Target environment
 
@@ -24,24 +25,27 @@ The ideal targets describe where the project wants normal operation to remain.
 The regression redlines are the maximum tolerated values; crossing one needs a
 measurement, an explanation, and a recovery plan. Rows marked "enforced" are
 checked by the corresponding profile; the CI invocation enables both the quick
-latency/output profile and optional idle resource profile.
+latency/output profile and the optional load and idle-resource profiles.
 
 | Metric | Ideal target | Regression redline | Current automation |
 | --- | ---: | ---: | --- |
 | Single-module startup p95 | ≤ 50 ms | > 150 ms | Enforced |
 | Single-event response p95 / p99 | ≤ 20 / 50 ms | > 50 / 100 ms | Enforced |
-| Single-module idle RSS | ≤ 8 MiB | > 16 MiB | Enforced in the CI resource profile |
-| Eight-module total idle RSS | ≤ 48 MiB | > 80 MiB | Enforced for exactly 8 slots in CI |
-| CPU with no events | Approximately 0% | > 0.2% per module | Enforced in the CI resource profile |
+| Single-module idle RSS | ≤ 8 MiB | > 16 MiB | CI resource gate |
+| Eight-module total idle RSS | ≤ 48 MiB | > 80 MiB | CI: 8 slots |
+| CPU with no events | ~0% | > 0.2% per module | CI resource gate |
 | Stdout per event | ≤ 8 KiB | > 32 KiB | Enforced |
-| Fault isolation | ≤ 3 invalid responses | Core impact | Not measured |
+| 1/4/8 load | 1,000 events/min | Drops or >100 ms | CI gate |
+| Fault isolation | ≤ 3 invalid | Core impact | Driver tests; core-owned |
 
 The automated limits are therefore startup p95 ≤ 150 ms, event p95 ≤ 50 ms,
 event p99 ≤ 100 ms, maximum event stdout ≤ 32,768 bytes, per-slot peak idle RSS
 ≤ 16,384 KiB, exact-eight-slot peak idle RSS ≤ 81,920 KiB, and per-slot idle
 CPU ≤ 0.2% of one core. Resource limits are applied when `--idle-resources` is
-enabled; CI enables that profile. The ideal values are not relaxed merely
-because automation gates the redlines.
+enabled. The `--load` profile additionally requires zero drops, complete
+fan-out, p95/p99 within the 50/100-ms event limits, and zero source responses
+past 100 ms. CI enables both optional profiles. The ideal values are not
+relaxed merely because automation gates the redlines.
 
 The 32,768-byte stdout value is the policy redline recorded in Issue #7. TNT's
 transport is slightly stricter: each of at most eight response records has a
@@ -63,9 +67,10 @@ make perf
 ```
 
 The default remains the quick startup/event profile. Run the informational
-eight-slot idle resource profile separately:
+load or eight-slot idle resource profiles separately:
 
 ```sh
+make perf-load
 make perf-resources
 ```
 
@@ -84,23 +89,24 @@ scripts/check_modules.sh --performance [MODULE_DIR ...]
 Its default behavior remains the quick manifest/handshake validation. With
 `--performance`, it finishes those checks for every selected directory first,
 then invokes `scripts/benchmark_modules.py` exactly once with `--check`,
-`--idle-resources`, and each checked directory as an explicit `--module-dir`.
-This keeps every budget and measurement rule in the shared benchmark. It also
-works after static checks delegated through `--checker` or
+`--idle-resources`, `--load`, and each checked directory as an explicit
+`--module-dir`. This keeps every budget and measurement rule in the shared
+benchmark. It also works after static checks delegated through `--checker` or
 `TNT_MODULE_CHECKER`; `TNT_MODULES_PYTHON` selects Python, while
 `TNT_MODULES_BENCHMARK` can substitute the benchmark harness for testing.
 
-`make perf-check` alone keeps the same quick latency/output gate. Include idle
-resources when a local run should match CI's enforced scope:
+`make perf-check` alone keeps the same quick latency/output gate. Include load
+and idle resources when a local run should match CI's enforced scope:
 
 ```sh
-make perf-check PERF_ARGS="--idle-resources --idle-seconds 10"
+make perf-check PERF_ARGS="--load --idle-resources --idle-seconds 10"
 ```
 
 Write the same enforced run as a structured JSON report:
 
 ```sh
-make perf-check PERF_ARGS="--json-output module-performance.json"
+make perf-check PERF_ARGS="--load --idle-resources \
+  --json-output module-performance.json"
 ```
 
 Arguments can be passed through `PERF_ARGS`. For example:
@@ -114,6 +120,13 @@ Idle resource topology and sampling are also configurable:
 ```sh
 make perf-resources PERF_ARGS="--idle-instances 8 --idle-settle 0.5 \
   --idle-seconds 10 --resource-sample-interval 0.25"
+```
+
+The fixed-rate profile is configurable independently:
+
+```sh
+make perf-load PERF_ARGS="--load-topologies 1,4,8 \
+  --load-events-per-minute 1000 --load-seconds 6"
 ```
 
 Run `python3 scripts/benchmark_modules.py --help` for the full interface. Use
@@ -172,6 +185,26 @@ Measurements use `time.perf_counter()` and nearest-rank percentiles:
    `message.create` plain text, `event.ok` framing, TNT's 4,094-byte JSONL
    payload limit, and the eight-response-per-event limit.
 
+Startup and event summaries deliberately separate shell/process launch plus
+handshake time from persistent-process command handling time. This is the
+requested startup/business-command split; it does not pretend to microprofile
+individual awk/parser functions inside one command.
+
+The optional fixed-rate load profile fans one source stream out concurrently
+to 1, 4, and 8 module slots. It offers 1,000 source events per minute for six
+seconds per topology by default, after five warmups per slot. Each process has
+at most one in-flight event and one pending event in its driver queue. A further
+arrival while that bounded slot is full is counted as dropped instead of
+accumulating memory. The single waiting position absorbs one within-budget
+60–100-ms jitter at the 60-ms arrival interval, while sustained overload still
+fails through drops or the 100-ms source deadline. The report includes
+assignments, offered/completed source events and deliveries, drops, throughput,
+queue depth, deadline misses, and per-slot plus fan-out p50/p95/p99 latency.
+Repository modules are reused round-robin when a topology has more slots than
+distinct selected modules. Regression fixtures also verify that a persistently
+slow slot exhausts only its own bounded queue while a healthy peer completes
+the full offered stream.
+
 The optional idle resource profile starts the requested number of module slots
 at the same time, handshakes each one, lets them settle, and then samples every
 process in each module's private process group. Eight slots are used by default.
@@ -194,19 +227,22 @@ RSS/process-count observation, and CPU time at the end of such a short-lived
 process can be undercounted. Helpers that deliberately leave the module's
 process group are outside this profile. These limits are why the default CI
 window is ten seconds rather than the short windows used by regression tests.
+Every bundled entrypoint blocks on stdin while idle rather than polling or
+running a timer; the CPU gate makes that property regression-visible.
 
 The JSON report has `schema_version` 1. It records the generation time, commit,
 dirty-worktree state, OS, Python runtime, CPU identity and logical CPU count;
-the sample, timeout, and idle-resource configuration; enforced `budgets`; the
-independent `transport_limits`; each module's version, directory, workload,
-latency and stdout summaries; `idle_resources`; failures; an `error` value; and
-overall pass status. `idle_resources.status` is `not_requested`, `measured`, or
-`error`. A measured result contains its backend, slot assignments, duration,
-sample count, per-slot summaries, aggregate summary, failures, and pass status.
-On a normal run, `error` is `null`. If a benchmark, protocol, or resource
-backend error interrupts the run, the requested JSON report still retains
-completed module results, records the error, sets resource and overall pass to
-false, and returns status 2 rather than silently passing an unavailable metric.
+the sample, timeout, load, and idle-resource configuration; enforced `budgets`;
+the independent `transport_limits`; each module's version, directory, workload,
+latency and stdout summaries; `idle_resources`; `load`; failures; an `error`
+value; and overall pass status. Optional profile status is `not_requested`,
+`measured`, or `error`. A measured result contains its backend/topology,
+assignments, duration, per-slot summaries, aggregate summaries, failures, and
+pass status. On a normal run, `error` is `null`. If a benchmark, protocol, or
+resource backend error interrupts the run, the requested JSON report still
+retains completed results, records the error, sets the requested profile and
+overall pass to false, and returns status 2 rather than silently passing an
+unavailable metric.
 
 In schema v1, `transport_limits` records a 4,094-byte JSONL payload, eight event
 response records, and 32,760 event-output bytes including newlines. These are
@@ -223,20 +259,24 @@ artifacts.
 
 | Module | Startup p95 (ms) | Event p95 (ms) | Event p99 (ms) |
 | --- | ---: | ---: | ---: |
-| `8ball-module` | 15.965 | 31.831 | 33.117 |
-| `choose-module` | 15.569 | 34.113 | 38.013 |
-| `flip-module` | 14.213 | 25.893 | 38.695 |
-| `quote-module` | 20.196 | 14.655 | 16.888 |
-| `roll-module` | 8.835 | 26.013 | 27.045 |
+| `8ball-module` | 14.137 | 13.057 | 13.800 |
+| `choose-module` | 8.818 | 13.350 | 15.917 |
+| `flip-module` | 8.452 | 11.867 | 12.086 |
+| `quote-module` | 8.399 | 8.848 | 9.193 |
+| `roll-module` | 7.847 | 11.804 | 11.973 |
 
-All five modules stayed below the currently enforced redlines. Some event p95
-values remain above the 20-ms ideal target, which is useful optimization signal
-but not a redline failure.
+All five modules stayed below both the currently enforced redlines and the
+20-ms ideal event p95 target on this reference host.
+
+The same run offered 100 source events at each of the 1-, 4-, and 8-slot
+topologies. It completed all 1,300 deliveries without a drop or deadline miss
+at 1,000 source events/minute. Source fan-out p95/p99 was 28.637/33.544 ms,
+34.881/42.358 ms, and 43.878/50.360 ms respectively.
 
 A subsequent default ten-second resource run on the same host started eight
 slots (the five modules followed by reused `8ball`, `choose`, and `flip` slots).
-Every slot had one process, per-slot peak RSS ranged from 1,920 to 2,256 KiB,
-aggregate peak RSS was 16,384 KiB, and sampled idle CPU was 0.0% for every slot.
+Every slot had one process, per-slot peak RSS ranged from 1,904 to 2,208 KiB,
+aggregate peak RSS was 16,208 KiB, and sampled idle CPU was 0.0% for every slot.
 This is a local reference; the retained macOS and Linux CI reports remain the
 cross-platform evidence for each run.
 
@@ -246,8 +286,8 @@ GitHub Actions continues to run `make perf-check` directly after the test suite
 instead of routing its artifact-producing run through checker `--performance`.
 It runs on both
 `ubuntu-24.04` and `macos-latest`. Each job writes `module-performance.json`
-while enabling the eight-slot, ten-second idle resource profile, and uploads it
-even when the budget step fails:
+while enabling the 1/4/8-slot fixed-rate load and the eight-slot, ten-second
+idle resource profile, and uploads it even when the budget step fails:
 
 - `module-performance-ubuntu-24.04`
 - `module-performance-macos-latest`
@@ -258,23 +298,20 @@ emulate the 1-vCPU, 128-MiB target host.
 
 ## Current scope and known gaps
 
-This is an initial enforceable slice of the performance charter, not completion
-of Issue #7. In particular, the current harness:
+The repository-owned measurements and regression gates are automated.
+Remaining system-level limits are explicit rather than silently treated as
+passes. The current harness:
 
-- runs modules sequentially rather than measuring 1-, 4-, and 8-module
-  event-response concurrency (the idle resource profile only makes processes
-  co-resident);
-- does not sustain the target 1,000 events per minute or report throughput and
-  queue behavior under load;
 - does not measure scheduler wakeups independently from accumulated CPU time;
 - does not exercise TNT core supervision or prove module-to-module fault
-  isolation from slow, crashed, flooding, or invalid-output modules;
-- does not split shell/process overhead from command business logic;
+  isolation from slow, crashed, flooding, or invalid-output modules, although
+  its regression corpus covers each failure at the module/driver boundary;
+- does not microprofile parser overhead separately from command business logic;
 - does not exhaustively cover every command variant or input size; and
 - exposes resource and latency enforcement from `scripts/check_modules.sh`
   only as the explicit `--performance` profile; the checker delegates to the
   shared benchmark rather than implementing a second measurement or budget
-  path;
+  path.
 
 In particular, a pass in this repository must not be reported as proof of TNT
 core module-to-module fault isolation. The adjacent TNT 1.2 runtime currently
@@ -284,7 +321,6 @@ therefore delay healthy modules later in that loop. Correcting and proving that
 behavior requires a separate TNT core scheduling/supervision change and its own
 integration tests; this resource slice does not change that conclusion.
 
-Future work should add concurrent 1/4/8-module event load, the sustained 1,000
-events/minute target, queue measurements, and TNT core fault-isolation tests
-without replacing protocol/behavior tests or trading away module correctness
-for benchmark numbers.
+Future TNT core work may change scheduling and add core fault-isolation tests.
+That work must not replace these protocol/behavior/load tests or trade module
+correctness for benchmark numbers.

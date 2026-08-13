@@ -51,14 +51,26 @@ json_string_field() {
     -f ./module_json.awk
 }
 
+seed_base=
+seed_counter=0
+
+next_seed() {
+  if [ -z "$seed_base" ]; then
+    seed_base=$(od -An -N4 -tu4 </dev/urandom 2>/dev/null)
+    while [ "${seed_base# }" != "$seed_base" ]; do seed_base=${seed_base# }; done
+    while [ "${seed_base% }" != "$seed_base" ]; do seed_base=${seed_base% }; done
+    case "$seed_base" in ''|*[!0-9]*) seed_base=$$ ;; esac
+  fi
+  seed_counter=$((seed_counter + 1))
+  event_seed=$(((seed_base + seed_counter) % 2147483646 + 1))
+}
+
 # Compute the plain-text dice result for a spec like "2d6+3".
 # Prints exactly the user-visible line to emit.
 roll_result() {
   spec=$1
   sender=$2
-
-  seed=$(od -An -N4 -tu4 </dev/urandom 2>/dev/null | tr -d ' ')
-  [ -n "$seed" ] || seed=$$
+  seed=$3
 
   # Pass untrusted strings as input records. awk -v assignments interpret
   # backslash escapes, which can corrupt a literal sender or dice spec.
@@ -140,8 +152,10 @@ while IFS= read -r line; do
         sender=$(json_string_field message sender "$line")
         rest=${plain_text#/roll}
         # trim leading spaces from the dice spec
-        rest=$(printf '%s' "$rest" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-        result=$(roll_result "$rest" "$sender")
+        while [ "${rest# }" != "$rest" ]; do rest=${rest# }; done
+        while [ "${rest% }" != "$rest" ]; do rest=${rest% }; done
+        next_seed
+        result=$(roll_result "$rest" "$sender" "$event_seed")
         escaped=$(json_escape "$result")
         printf '{"type":"message.create","plain_text":"%s"}\n' "$escaped"
         printf '{"type":"event.ok"}\n'
