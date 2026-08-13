@@ -11,6 +11,8 @@ JSON Lines with TNT over stdin/stdout.
 - Framing: one complete JSON object per line
 - Direction: TNT sends events to module stdin; modules write responses to
   stdout
+- Event completion: every non-handshake event ends with exactly one `event.ok`
+  response
 - Error stream: modules should write diagnostics to stderr
 - License: protocol examples and official community modules should use TNT's
   license unless a module states stricter terms
@@ -42,7 +44,8 @@ Required fields:
 - `name`: stable module identifier, lowercase ASCII, `a-z`, `0-9`, and `-`.
   TNT 1.1.0 caps module names at 56 bytes so generated `module:<name>`
   senders fit the core message username limit.
-- `version`: module version.
+- `version`: module version in `MAJOR.MINOR.PATCH` form (for example,
+  `0.1.0`).
 - `entrypoint`: executable path relative to the manifest directory. Current
   TNT rejects absolute paths, `..`, whitespace, control characters, and shell
   metacharacters in entrypoints.
@@ -71,6 +74,11 @@ TNT and modules communicate with JSON Lines over stdio:
 - The module writes logs and diagnostics to stderr.
 - Messages must be UTF-8.
 - Each line must contain exactly one complete JSON object.
+- Keep each JSON payload at or below 4,094 bytes so the payload and newline fit
+  completely in TNT's 4,096-byte line buffer.
+- Current TNT runtimes accept at most eight response records for one event.
+- A `message.create` `plain_text` value must decode to 1–1,023 UTF-8 bytes and
+  must not contain C0 or DEL control characters.
 
 ## Handshake
 
@@ -111,30 +119,43 @@ TNT sends events to the module:
 }
 ```
 
-The module responds with zero or more response messages. For a chat response:
+For every event after the handshake, the module emits zero or more action
+records followed by exactly one `event.ok` terminator. For a chat response, the
+complete response sequence is:
 
 ```json
 {"type":"message.create","plain_text":"echo: hello"}
+{"type":"event.ok"}
 ```
 
-For no-op acknowledgement:
+When no action is needed, the complete response is just:
 
 ```json
 {"type":"event.ok"}
 ```
 
-TNT 1.1.0 disables a module that floods one event with too many responses or
-repeatedly emits invalid response records. Modules should emit `event.ok` when
-they are done with an event and should keep generated messages sparse.
+`event.ok` is a framing terminator, not an optional acknowledgement. Omitting it
+forces TNT to wait for the per-event response timeout before dispatch can
+continue; emitting more than one can terminate a later event accidentally. The
+startup handshake is the sole exception: it ends with `handshake.ok`, not
+`event.ok`.
+
+TNT 1.1.0 and newer disable a module that floods one event with too many
+responses or repeatedly emits invalid response records. Modules should keep
+generated messages sparse.
 
 ## Errors
 
-Modules report recoverable request errors with:
+Modules can report protocol negotiation failures during the startup handshake
+with:
 
 ```json
-{"type":"error","code":"bad_request","message":"missing plain_text"}
+{"type":"error","code":"unsupported_protocol","message":"requires tnt.module.v1"}
 ```
 
-Use stable, lowercase `code` values so TNT can route or display failures
-consistently. Every module-created message must include a plain-text fallback
-through `plain_text`.
+Use stable, lowercase `code` values. Current TNT runtimes accept only
+`message.create` actions and the final `event.ok` while processing an event, so
+event-specific validation failures should produce a user-visible
+`message.create` when useful, then `event.ok`; otherwise they should produce
+only `event.ok`. Write implementation diagnostics to stderr. Every
+module-created message must include a plain-text fallback through `plain_text`.

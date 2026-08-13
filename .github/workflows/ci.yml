@@ -11,6 +11,7 @@ permissions:
 jobs:
   test:
     name: module checks (${{ matrix.os }})
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -20,3 +21,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate manifests, handshakes, and module behavior
         run: make test
+      - name: Enforce module performance budgets
+        run: >-
+          make perf-check
+          PERF_ARGS="--idle-resources --idle-seconds 10
+          --json-output module-performance.json"
+      - name: Upload performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-performance-${{ matrix.os }}
+          path: module-performance.json
+          if-no-files-found: warn

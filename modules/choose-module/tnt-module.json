@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "tnt_min_version": "1.1.0",
   "description": "Picks one option at random for chat messages that start with /choose.",
+  "benchmark": {"plain_text": "/choose alpha | beta | gamma", "expect_message_create": true},
   "entrypoint": "./choose-module.sh",
   "permissions": ["message:read", "message:create"],
   "events": ["message.created"]

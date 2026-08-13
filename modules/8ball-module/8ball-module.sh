@@ -6,23 +6,42 @@
 # module stays quiet during normal chat.
 
 json_escape() {
-  printf '%s' "$1" | awk '
-    BEGIN { ORS = "" }
+  printf '%s' "$1" | LC_ALL=C awk '
+    BEGIN {
+      ORS = ""
+      hex = "0123456789abcdef"
+      for (i = 1; i <= 255; i++) byte[sprintf("%c", i)] = i
+    }
     {
-      gsub(/\\/,"\\\\")
-      gsub(/"/,"\\\"")
-      gsub(/\t/,"\\t")
-      gsub(/\r/,"\\r")
-      gsub(/\n/,"\\n")
-      print
+      if (NR > 1) printf "%s", "\\n"
+      for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1)
+        if (c == "\\") printf "%s", "\\\\"
+        else if (c == "\"") printf "%s", "\\\""
+        else if (c == "\b") printf "%s", "\\b"
+        else if (c == "\f") printf "%s", "\\f"
+        else if (c == "\t") printf "%s", "\\t"
+        else if (c == "\r") printf "%s", "\\r"
+        else {
+          value = byte[c]
+          if (value < 32 || value == 127) {
+            printf "\\u00%s%s", substr(hex, int(value / 16) + 1, 1), \
+                   substr(hex, (value % 16) + 1, 1)
+          } else {
+            printf "%s", c
+          }
+        }
+      }
     }
   '
 }
 
-extract_string() {
-  key=$1
-  line=$2
-  printf '%s\n' "$line" | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p"
+json_string_field() {
+  scope=$1
+  key=$2
+  line=$3
+  printf '%s\n' "$line" | LC_ALL=C awk -v scope="$scope" -v key="$key" \
+    -f ./module_json.awk
 }
 
 eightball_result() {
@@ -30,8 +49,11 @@ eightball_result() {
   seed=$(od -An -N4 -tu4 </dev/urandom 2>/dev/null | tr -d ' ')
   [ -n "$seed" ] || seed=$$
 
-  awk -v seed="$seed" -v sender="$sender" '
-    BEGIN {
+  # Pass untrusted text as input. awk -v assignments interpret backslash
+  # escapes, which can corrupt a literal sender and even emit raw controls.
+  printf '%s\n' "$sender" | LC_ALL=C awk -v seed="$seed" '
+    NR == 1 { sender = $0 }
+    END {
       srand(seed)
       if (sender == "") sender = "someone"
       n = 0
@@ -59,33 +81,35 @@ eightball_result() {
       a[++n] = "Outlook not so good."
       a[++n] = "Very doubtful."
       pick = int(rand() * n) + 1
-      printf "\xF0\x9F\x8E\xB1 %s: %s\n", sender, a[pick]
+      printf "🎱 %s: %s\n", sender, a[pick]
     }
   '
 }
 
 while IFS= read -r line; do
-  if printf '%s\n' "$line" | grep -q '"type"[[:space:]]*:[[:space:]]*"handshake"'; then
-    protocol=$(extract_string protocol "$line")
+  type=$(json_string_field "" type "$line")
+  if [ "$type" = "handshake" ]; then
+    protocol=$(json_string_field "" protocol "$line")
     if [ "$protocol" = "tnt.module.v1" ]; then
       printf '{"type":"handshake.ok","protocol":"tnt.module.v1","module":{"name":"8ball-module","version":"0.1.0"}}\n'
     else
       printf '{"type":"error","code":"unsupported_protocol","message":"requires tnt.module.v1"}\n'
     fi
-  elif printf '%s\n' "$line" | grep -q '"type"[[:space:]]*:[[:space:]]*"message.created"'; then
-    plain_text=$(extract_string plain_text "$line")
+  elif [ "$type" = "message.created" ]; then
+    plain_text=$(json_string_field message plain_text "$line")
     case "$plain_text" in
       "/8ball"|"/8ball "*)
-        sender=$(extract_string sender "$line")
+        sender=$(json_string_field message sender "$line")
         result=$(eightball_result "$sender")
         escaped=$(json_escape "$result")
         printf '{"type":"message.create","plain_text":"%s"}\n' "$escaped"
+        printf '{"type":"event.ok"}\n'
         ;;
       *)
         printf '{"type":"event.ok"}\n'
         ;;
     esac
   else
-    printf '{"type":"error","code":"bad_request","message":"expected handshake or message.created"}\n'
+    printf '{"type":"event.ok"}\n'
   fi
 done

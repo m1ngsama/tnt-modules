@@ -6,6 +6,10 @@ It implements `tnt.module.v1`: it reads JSONL events from stdin and writes
 JSONL responses to stdout. It only acts on public messages that begin with
 `/quote`; every other message is acknowledged with a no-op.
 
+For every `message.created` event it emits zero or one `message.create` action,
+then exactly one `event.ok` terminator. The startup handshake ends separately
+with `handshake.ok`.
+
 ## Syntax
 
 ```
