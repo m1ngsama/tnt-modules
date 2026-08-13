@@ -7,6 +7,10 @@ JSONL responses to stdout. It only acts on public messages that begin with
 `/roll`; every other message is acknowledged with a no-op so the module stays
 quiet during normal conversation.
 
+For every `message.created` event it emits zero or one `message.create` action,
+then exactly one `event.ok` terminator. The startup handshake ends separately
+with `handshake.ok`.
+
 ## Syntax
 
 The dice spec is case-insensitive (`d` or `D`):
@@ -52,4 +56,5 @@ The result text is always plain UTF-8 (the leading 🎲 is decorative and the
 line reads fine without it), satisfying the protocol's plain-text requirement.
 Randomness is seeded per roll from `/dev/urandom` (falling back to the PID),
 so repeated rolls within the same second still differ. JSON output is escaped;
-production modules handling untrusted input should prefer a real JSON parser.
+the bundled `module_json.awk` helper strictly parses the protocol fields while
+keeping this module self-contained.

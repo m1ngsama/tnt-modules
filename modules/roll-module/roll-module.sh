@@ -13,23 +13,42 @@
 # Bounds: 1..20 dice, 2..1000 sides, modifier within +/-10000.
 
 json_escape() {
-  printf '%s' "$1" | awk '
-    BEGIN { ORS = "" }
+  printf '%s' "$1" | LC_ALL=C awk '
+    BEGIN {
+      ORS = ""
+      hex = "0123456789abcdef"
+      for (i = 1; i <= 255; i++) byte[sprintf("%c", i)] = i
+    }
     {
-      gsub(/\\/,"\\\\")
-      gsub(/"/,"\\\"")
-      gsub(/\t/,"\\t")
-      gsub(/\r/,"\\r")
-      gsub(/\n/,"\\n")
-      print
+      if (NR > 1) printf "%s", "\\n"
+      for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1)
+        if (c == "\\") printf "%s", "\\\\"
+        else if (c == "\"") printf "%s", "\\\""
+        else if (c == "\b") printf "%s", "\\b"
+        else if (c == "\f") printf "%s", "\\f"
+        else if (c == "\t") printf "%s", "\\t"
+        else if (c == "\r") printf "%s", "\\r"
+        else {
+          value = byte[c]
+          if (value < 32 || value == 127) {
+            printf "\\u00%s%s", substr(hex, int(value / 16) + 1, 1), \
+                   substr(hex, (value % 16) + 1, 1)
+          } else {
+            printf "%s", c
+          }
+        }
+      }
     }
   '
 }
 
-extract_string() {
-  key=$1
-  line=$2
-  printf '%s\n' "$line" | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p"
+json_string_field() {
+  scope=$1
+  key=$2
+  line=$3
+  printf '%s\n' "$line" | LC_ALL=C awk -v scope="$scope" -v key="$key" \
+    -f ./module_json.awk
 }
 
 # Compute the plain-text dice result for a spec like "2d6+3".
@@ -41,12 +60,19 @@ roll_result() {
   seed=$(od -An -N4 -tu4 </dev/urandom 2>/dev/null | tr -d ' ')
   [ -n "$seed" ] || seed=$$
 
-  awk -v seed="$seed" -v sender="$sender" -v spec="$spec" '
+  # Pass untrusted strings as input records. awk -v assignments interpret
+  # backslash escapes, which can corrupt a literal sender or dice spec.
+  {
+    printf '%s\n' "$sender"
+    printf '%s\n' "$spec"
+  } | LC_ALL=C awk -v seed="$seed" '
     function usage() {
-      printf "\xF0\x9F\x8E\xB2 roll usage: /roll [N]d<sides>[+/-K]  e.g. /roll 2d6, /roll d20, /roll 3d6+2\n"
+      printf "🎲 roll usage: /roll [N]d<sides>[+/-K]  e.g. /roll 2d6, /roll d20, /roll 3d6+2\n"
       exit 0
     }
-    BEGIN {
+    NR == 1 { sender = $0; next }
+    NR == 2 { spec = $0; next }
+    END {
       srand(seed)
       if (sender == "") sender = "someone"
       if (spec == "") spec = "1d6"
@@ -89,40 +115,42 @@ roll_result() {
       res = total + mod
 
       if (n == 1 && mod == 0) {
-        printf "\xF0\x9F\x8E\xB2 %s rolled %s \xE2\x86\x92 %d\n", sender, label, total
+        printf "🎲 %s rolled %s → %d\n", sender, label, total
       } else {
         modtxt = (mod > 0 ? " (+" mod ")" : (mod < 0 ? " (" mod ")" : ""))
-        printf "\xF0\x9F\x8E\xB2 %s rolled %s \xE2\x86\x92 %s%s = %d\n", sender, label, out, modtxt, res
+        printf "🎲 %s rolled %s → %s%s = %d\n", sender, label, out, modtxt, res
       }
     }
   '
 }
 
 while IFS= read -r line; do
-  if printf '%s\n' "$line" | grep -q '"type"[[:space:]]*:[[:space:]]*"handshake"'; then
-    protocol=$(extract_string protocol "$line")
+  type=$(json_string_field "" type "$line")
+  if [ "$type" = "handshake" ]; then
+    protocol=$(json_string_field "" protocol "$line")
     if [ "$protocol" = "tnt.module.v1" ]; then
       printf '{"type":"handshake.ok","protocol":"tnt.module.v1","module":{"name":"roll-module","version":"0.1.0"}}\n'
     else
       printf '{"type":"error","code":"unsupported_protocol","message":"requires tnt.module.v1"}\n'
     fi
-  elif printf '%s\n' "$line" | grep -q '"type"[[:space:]]*:[[:space:]]*"message.created"'; then
-    plain_text=$(extract_string plain_text "$line")
+  elif [ "$type" = "message.created" ]; then
+    plain_text=$(json_string_field message plain_text "$line")
     case "$plain_text" in
       "/roll"|"/roll "*)
-        sender=$(extract_string sender "$line")
+        sender=$(json_string_field message sender "$line")
         rest=${plain_text#/roll}
         # trim leading spaces from the dice spec
         rest=$(printf '%s' "$rest" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
         result=$(roll_result "$rest" "$sender")
         escaped=$(json_escape "$result")
         printf '{"type":"message.create","plain_text":"%s"}\n' "$escaped"
+        printf '{"type":"event.ok"}\n'
         ;;
       *)
         printf '{"type":"event.ok"}\n'
         ;;
     esac
   else
-    printf '{"type":"error","code":"bad_request","message":"expected handshake or message.created"}\n'
+    printf '{"type":"event.ok"}\n'
   fi
 done

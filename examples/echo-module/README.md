@@ -8,11 +8,16 @@ It reads JSONL from stdin and emits JSONL to stdout:
 
 - `handshake` requests for `tnt.module.v1` receive `handshake.ok`.
 - `message.created` events with `message.plain_text` receive a
-  `message.create` response.
-- Unsupported inputs receive an `error` response.
+  `message.create` response followed by `event.ok`.
+- Unsupported or non-actionable events receive only `event.ok` (a no-op).
+- A handshake for an unsupported protocol receives an `error` response.
 
-The shell implementation is intentionally small and uses simple text matching.
-Production modules should use a JSON parser and preserve unknown fields.
+The startup handshake ends with `handshake.ok`. Every event after it ends with
+exactly one `event.ok`; the terminator lets TNT move
+to the next event without waiting for its response timeout.
+
+The shell implementation uses the self-contained `module_json.awk` helper to
+read the protocol fields without mistaking nested metadata for top-level data.
 
 Run it manually:
 

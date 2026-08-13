@@ -6,3 +6,4 @@ build/
 dist/
 node_modules/
 __pycache__/
+module-performance.json

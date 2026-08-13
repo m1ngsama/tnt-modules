@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "tnt_min_version": "1.1.0",
   "description": "Answers chat messages that start with /8ball like a Magic 8-Ball.",
+  "benchmark": {"plain_text": "/8ball will this benchmark pass?", "expect_message_create": true},
   "entrypoint": "./8ball-module.sh",
   "permissions": ["message:read", "message:create"],
   "events": ["message.created"]
