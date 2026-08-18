@@ -57,7 +57,8 @@ function utf8(code) {
                  128 + (int(code / 64) % 64), 128 + (code % 64))
 }
 
-function valid_utf8(value,    i, total, first, second, width, j, continuation) {
+function valid_utf8(value, reject_controls,    i, total, first, second,
+                    width, j, continuation) {
   i = 1
   total = length(value)
   while (i <= total) {
@@ -85,6 +86,9 @@ function valid_utf8(value,    i, total, first, second, width, j, continuation) {
         (first == 237 && second > 159) ||
         (first == 240 && second < 144) ||
         (first == 244 && second > 143)) return 0
+    if (reject_controls &&
+        ((width == 1 && (first < 32 || first == 127)) ||
+         (first == 194 && second >= 128 && second <= 159))) return 0
     i += width
   }
   return 1
@@ -272,12 +276,16 @@ function parse_value(path,    c, value, value_unsafe, rest) {
   skip_ws()
   c = substr(source, pos, 1)
   if (c == "\"") {
-    value = parse_string(path == wanted_path)
-    value_unsafe = string_unsafe
-    if (!invalid && string_ok && path == wanted_path && !found) {
-      result = value
-      found = 1
-      unsafe_target = value_unsafe
+    value = parse_string(runtime || path == wanted_path)
+    value_unsafe = string_unsafe || !valid_utf8(value, 1)
+    if (!invalid && string_ok) {
+      if (runtime) {
+        if (!value_unsafe) string_value[path] = value
+      } else if (path == wanted_path && !found) {
+        result = value
+        found = 1
+        unsafe_target = value_unsafe
+      }
     }
   } else if (c == "{") {
     parse_object(path)
@@ -299,27 +307,124 @@ function parse_value(path,    c, value, value_unsafe, rest) {
   }
 }
 
+function clear_record(    item) {
+  for (item in seen) delete seen[item]
+  for (item in string_value) delete string_value[item]
+}
+
+function safe_string(scope_name, field_name,    path) {
+  path = scope_name == "" ? field_name : scope_name SUBSEP field_name
+  if (!record_valid || !(path in string_value)) return ""
+  return string_value[path]
+}
+
+function json_escape(value,    out, i, c, code, hex) {
+  out = ""
+  hex = "0123456789abcdef"
+  for (i = 1; i <= length(value); i++) {
+    c = substr(value, i, 1)
+    code = byte[c]
+    if (c == "\\") out = out "\\\\"
+    else if (c == "\"") out = out "\\\""
+    else if (code == 8) out = out "\\b"
+    else if (code == 12) out = out "\\f"
+    else if (code == 10) out = out "\\n"
+    else if (code == 13) out = out "\\r"
+    else if (code == 9) out = out "\\t"
+    else if (code < 32 || code == 127) {
+      out = out "\\u00" substr(hex, int(code / 16) + 1, 1) \
+            substr(hex, (code % 16) + 1, 1)
+    } else {
+      out = out c
+    }
+  }
+  return out
+}
+
+function utf8_truncate(value, limit) {
+  if (length(value) <= limit) return value
+  value = substr(value, 1, limit)
+  while (value != "" && !valid_utf8(value)) {
+    value = substr(value, 1, length(value) - 1)
+  }
+  return value
+}
+
+function emit_message(value) {
+  value = utf8_truncate(value, 1023)
+  if (value == "" || !valid_utf8(value, 1)) return
+  printf "{\"type\":\"message.create\",\"plain_text\":\"%s\"}\n", \
+         json_escape(value)
+}
+
+function emit_event_ok() {
+  print "{\"type\":\"event.ok\"}"
+  fflush()
+}
+
+function begin_event(name, version,    type, protocol) {
+  type = safe_string("", "type")
+  if (type == "handshake") {
+    protocol = safe_string("", "protocol")
+    if (protocol == "tnt.module.v1") {
+      printf "{\"type\":\"handshake.ok\",\"protocol\":\"tnt.module.v1\"," \
+             "\"module\":{\"name\":\"%s\",\"version\":\"%s\"}}\n", \
+             name, version
+    } else {
+      print "{\"type\":\"error\",\"code\":\"unsupported_protocol\"," \
+            "\"message\":\"requires tnt.module.v1\"}"
+    }
+    fflush()
+    return 0
+  }
+  if (type != "message.created") {
+    emit_event_ok()
+    return 0
+  }
+  return 1
+}
+
+function reseed_random(    event_seed) {
+  seed_counter++
+  event_seed = ((seed + seed_counter) % 2147483646) + 1
+  srand(event_seed)
+}
+
+function next_random() {
+  reseed_random()
+  return rand()
+}
+
 {
-  if (record_seen) {
+  if (!runtime && record_seen) {
     invalid = 1
     next
   }
-  record_seen = 1
+  if (!runtime) record_seen = 1
+  clear_record()
+  invalid = 0
+  found = 0
+  unsafe_target = 0
+  result = ""
+  record_valid = 0
   source = $0
   source_length = length(source)
   if (!valid_utf8(source)) {
     fail()
-    next
+  } else {
+    pos = 1
+    wanted_path = scope == "" ? key : scope SUBSEP key
+    parse_value("")
+    skip_ws()
+    if (pos <= source_length) fail()
+    if (!invalid) record_valid = 1
   }
-  pos = 1
-  wanted_path = scope == "" ? key : scope SUBSEP key
-  parse_value("")
-  skip_ws()
-  if (pos <= source_length) fail()
 }
 
 END {
-  if (invalid || unsafe_target || !record_seen) exit 2
-  if (!found) exit 1
-  printf "%s", result
+  if (!runtime) {
+    if (invalid || unsafe_target || !record_seen) exit 2
+    if (!found) exit 1
+    printf "%s", result
+  }
 }

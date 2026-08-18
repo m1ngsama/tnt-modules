@@ -695,18 +695,26 @@ $(nl -ba "$literal_file")"
 
 assert_json_escape_semantics() {
     escape_label=$1
-    escape_dir=$2
-    escape_entry=$3
+    escape_parser=$2
     escape_file="$STATE_DIR/$escape_label-json-escape.out"
+    escape_program="$STATE_DIR/json-escape.awk"
+    cat >"$escape_program" <<'AWK'
+BEGIN {
+  runtime = 1
+  value = "quote=\" slash=\\ tab=" sprintf("%c", 9) \
+          " backspace=" sprintf("%c", 8) \
+          " formfeed=" sprintf("%c", 12) \
+          " carriage=" sprintf("%c", 13) \
+          " newline=" sprintf("%c", 10) \
+          " control=" sprintf("%c", 1) \
+          " delete=" sprintf("%c", 127) " utf8=🙂"
+  printf "%s", json_escape(value)
+  exit
+}
+AWK
 
-    if (
-        cd "$ROOT/$escape_dir"
-        ENTRYPOINT=$escape_entry /bin/sh -s <<'SH'
-. "./$ENTRYPOINT" </dev/null
-value=$(printf 'quote=" slash=\\ tab=\t backspace=\b formfeed=\f carriage=\r newline=\n control=\001 delete=\177 utf8=🙂')
-json_escape "$value"
-SH
-    ) >"$escape_file" 2>"$escape_file.err"; then
+    if LC_ALL=C awk -f "$ROOT/$escape_parser" \
+        -f "$escape_program" </dev/null >"$escape_file" 2>"$escape_file.err"; then
         :
     else
         fail_case "$escape_label: JSON escaping is portable" \
@@ -895,6 +903,8 @@ assert_parser_result escaped-control 2 '' \
     '{"message":{"plain_text":"unsafe\u0001text"}}' message plain_text
 assert_parser_result escaped-newline 2 '' \
     '{"message":{"plain_text":"unsafe\ntext"}}' message plain_text
+assert_parser_result escaped-c1 2 '' \
+    '{"message":{"plain_text":"unsafe\u0085text"}}' message plain_text
 assert_parser_result unrelated-escaped-control 0 '/flip' \
     '{"metadata":{"note":"line\nwith\ttabs\u0001"},"message":{"plain_text":"/flip"}}' message plain_text
 
@@ -921,12 +931,15 @@ else
         "expected status 2 with no output, got $parser_invalid_utf8_status"
 fi
 
-assert_json_escape_semantics roll modules/roll-module roll-module.sh
-assert_json_escape_semantics flip modules/flip-module flip-module.sh
-assert_json_escape_semantics 8ball modules/8ball-module 8ball-module.sh
-assert_json_escape_semantics choose modules/choose-module choose-module.sh
-assert_json_escape_semantics quote modules/quote-module quote-module.sh
-assert_json_escape_semantics echo examples/echo-module echo-module.sh
+parser_raw_c1=$(printf '{"message":{"plain_text":"unsafe\302\205text"}}')
+assert_parser_result raw-c1 2 '' "$parser_raw_c1" message plain_text
+
+assert_json_escape_semantics roll modules/roll-module/module_json.awk
+assert_json_escape_semantics flip modules/flip-module/module_json.awk
+assert_json_escape_semantics 8ball modules/8ball-module/module_json.awk
+assert_json_escape_semantics choose modules/choose-module/module_json.awk
+assert_json_escape_semantics quote modules/quote-module/module_json.awk
+assert_json_escape_semantics echo examples/echo-module/module_json.awk
 
 # --- roll-module ---
 assert_handshakes roll modules/roll-module roll-module.sh roll-module
@@ -1100,6 +1113,11 @@ assert_noop_event echo examples/echo-module echo-module.sh \
     '{"type":"message.created","message":{"sender":"frank","plain_text":"unsafe\u0001text"}}' escaped-control
 assert_noop_event echo examples/echo-module echo-module.sh \
     '{"type":"message.created","message":{"sender":"frank","plain_text":"unsafe\ntext"}}' escaped-newline
+assert_noop_event echo examples/echo-module echo-module.sh \
+    '{"type":"message.created","message":{"sender":"frank","plain_text":"unsafe\u0085text"}}' escaped-c1
+echo_raw_c1=$(printf '{"type":"message.created","message":{"sender":"frank","plain_text":"unsafe\302\205text"}}')
+assert_noop_event echo examples/echo-module echo-module.sh \
+    "$echo_raw_c1" raw-c1
 
 echo_bad_event_file="$STATE_DIR/echo-missing-plain-text.out"
 module_out "$echo_bad_event_file" examples/echo-module echo-module.sh \
