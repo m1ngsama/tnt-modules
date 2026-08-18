@@ -1,0 +1,125 @@
+.TH TNT-MODULES 7 "2026-08-18" "tnt-modules 0.3.0"
+.SH NAME
+tnt\-modules \- bundled chat commands for TNT
+.SH SYNOPSIS
+.EX
+\fBTNT_MODULE_PATHS=\fP\fImodule-dir\fP\
+[\fB:\fP\fImodule-dir\fP]...\ \fBtnt\fP
+.EE
+.SH DESCRIPTION
+.B tnt\-modules
+supplies five optional external-process modules for
+.BR tnt (8).
+TNT starts each enabled module as a separate child process.
+The bundled modules receive public chat messages.
+A matching module may publish a public reply under its module name.
+Several modules can be enabled together.
+Other commands and normal conversation produce no bundled reply.
+.SS Bundled commands
+Command names are case-sensitive.
+Each command must begin the message.
+It must end the message or be followed by an ASCII space.
+.TP
+.BI "/roll [" count "]d" sides "[+/\-" modifier "]"
+Roll dice and publish the individual rolls and total.
+With no dice expression, roll one six-sided die.
+The letter
+.B d
+is case-insensitive.
+.I count
+must be 1\(en20,
+.I sides
+must be 2\(en1000, and the absolute value of
+.I modifier
+must not exceed 10000.
+An invalid expression produces a short usage reply.
+.TP
+.B /flip
+Publish either heads or tails.
+Trailing text is ignored.
+.TP
+.BI "/8ball [" question "]"
+Publish one of the 20 classic Magic 8-Ball answers.
+The question is optional.
+.TP
+.BI "/choose " option " | " option " [| " option ]...
+Publish one randomly selected pipe-separated option.
+Leading and trailing spaces and tabs are removed from each option.
+At least two nonempty options are required;
+otherwise the module produces a short usage reply.
+.TP
+.B /quote
+Publish a random proverb from the module's built-in list.
+Trailing text is ignored.
+.SH SECURITY
+Module processes run as the TNT service account.
+They inherit its user, group, filesystem, and network privileges.
+They are not an operating-system sandbox.
+Manifest permissions describe protocol capabilities;
+they do not restrict system calls or resource access.
+.PP
+The bundled modules perform no network operations.
+Review any replacement or additional module before enabling it,
+keep its directory from being writable by untrusted users,
+and run TNT under a dedicated least-privileged account.
+Use an operating-system sandbox or container for stronger isolation.
+.PP
+TNT can disable a module that stalls or violates the protocol.
+That supervision does not contain filesystem or network side effects.
+.SH ENVIRONMENT
+.TP
+.B TNT_MODULE_PATHS
+A colon-separated list of module directories read when TNT starts.
+Each directory must contain
+.I tnt\-module.json
+and the executable entrypoint named by that manifest.
+An empty or unset value disables external modules.
+TNT enables at most eight valid modules.
+Restart TNT after changing the value.
+.IP
+Relative directories are resolved from TNT's working directory.
+Use absolute directories in service configuration.
+For the default
+.B make install
+layout,
+enable the dice and coin modules with:
+.EX
+TNT_MODULE_PATHS=/usr/local/libexec/tnt/modules/roll\-module:\e
+/usr/local/libexec/tnt/modules/flip\-module \e
+    tnt
+.EE
+.SH FILES
+.TP
+.I /usr/local/libexec/tnt/modules/
+Default installation root for the five module directories.
+Changing
+.B PREFIX
+or
+.B MODULEDIR
+when running
+.B make install
+changes this path.
+.TP
+.I modules/
+Contains the bundled
+.BR 8ball\-module ,
+.BR choose\-module ,
+.BR flip\-module ,
+.BR quote\-module ,
+and
+.B roll\-module
+directories in the source distribution.
+Pass an individual child directory, not this parent directory, in
+.BR TNT_MODULE_PATHS .
+Each child contains its manifest, executable entrypoint, JSON parser, and
+module program.
+.SH VERSIONS
+The bundled manifests require TNT 1.1.0 or later and use the
+.B tnt.module.v1
+protocol.
+TNT checks the manifest protocol and startup handshake.
+It enables only modules that pass both checks.
+.SH SEE ALSO
+.BR tntctl (1),
+.BR tnt\-module\-protocol (7),
+.BR tnt (8)
