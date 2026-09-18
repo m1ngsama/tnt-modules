@@ -14,7 +14,7 @@ function clear_choices(    item) {
 }
 
 {
-  if (!begin_event("choose-module", "0.2.0")) next
+  if (!begin_event("choose-module", "0.2.1")) next
   text = safe_string("message", "plain_text")
   if (text == "/choose" || substr(text, 1, 8) == "/choose ") {
     rest = trim(substr(text, 8))
