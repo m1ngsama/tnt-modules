@@ -51,7 +51,7 @@ function roll_result(spec, sender,    dpos, ncount, rest, mod, mpos, i, c,
 }
 
 {
-  if (!begin_event("roll-module", "0.2.0")) next
+  if (!begin_event("roll-module", "0.2.1")) next
   text = safe_string("message", "plain_text")
   if (text == "/roll" || substr(text, 1, 6) == "/roll ") {
     rest = substr(text, 6)

@@ -46,7 +46,7 @@ jobs:
           - tier: minimum
             tnt_ref: v1.1.0
           - tier: stable
-            tnt_ref: v1.3.0
+            tnt_ref: v1.3.2
           - tier: main
             tnt_ref: main
     steps:

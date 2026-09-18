@@ -3,7 +3,7 @@ BEGIN {
 }
 
 {
-  if (!begin_event("flip-module", "0.2.0")) next
+  if (!begin_event("flip-module", "0.2.1")) next
   text = safe_string("message", "plain_text")
   if (text == "/flip" || substr(text, 1, 6) == "/flip ") {
     sender = safe_string("message", "sender")

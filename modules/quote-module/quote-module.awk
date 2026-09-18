@@ -19,7 +19,7 @@ BEGIN {
 }
 
 {
-  if (!begin_event("quote-module", "0.2.0")) next
+  if (!begin_event("quote-module", "0.2.1")) next
   text = safe_string("message", "plain_text")
   if (text == "/quote" || substr(text, 1, 7) == "/quote ") {
     pick = int(next_random() * quote_count) + 1

@@ -23,7 +23,7 @@ BEGIN {
 }
 
 {
-  if (!begin_event("8ball-module", "0.2.0")) next
+  if (!begin_event("8ball-module", "0.2.1")) next
   text = safe_string("message", "plain_text")
   if (text == "/8ball" || substr(text, 1, 7) == "/8ball ") {
     sender = safe_string("message", "sender")
