@@ -5,6 +5,7 @@
 PYTHON ?= python3
 PERF_ARGS ?=
 TNT_ROOT ?= ../TNT
+POLICY_TESTS ?= 1
 PREFIX ?= /usr/local
 MANDIR ?= $(PREFIX)/share/man
 LIBEXECDIR ?= $(PREFIX)/libexec
@@ -17,6 +18,7 @@ test: check-modules
 	@tests/test_check_modules.sh
 	@tests/test_modules_behavior.sh
 	@$(PYTHON) tests/test_benchmark_modules.py
+	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_guard.py
 
 release-check:
 	@scripts/release_check.sh
@@ -52,6 +54,9 @@ install-modules:
 		$(INSTALL) -m 0644 "modules/$$module/tnt-module.json" "$$dir/"; \
 		$(INSTALL) -m 0755 "modules/$$module/$$module.sh" "$$dir/"; \
 	done
+	$(INSTALL) -d "$(DESTDIR)$(MODULEDIR)/guard-module"
+	$(INSTALL) -m 0644 modules/guard-module/tnt-module.json "$(DESTDIR)$(MODULEDIR)/guard-module/"
+	$(INSTALL) -m 0755 modules/guard-module/guard-module.py "$(DESTDIR)$(MODULEDIR)/guard-module/"
 
 install-man: $(MANPAGE)
 	$(INSTALL) -d "$(DESTDIR)$(MANDIR)/man7"
@@ -69,6 +74,9 @@ uninstall-modules:
 		$(RM) "$$dir/$$module.sh"; \
 		rmdir "$$dir" 2>/dev/null || true; \
 	done; \
+	$(RM) "$(DESTDIR)$(MODULEDIR)/guard-module/guard-module.py"; \
+	$(RM) "$(DESTDIR)$(MODULEDIR)/guard-module/tnt-module.json"; \
+	rmdir "$(DESTDIR)$(MODULEDIR)/guard-module" 2>/dev/null || true; \
 	rmdir "$(DESTDIR)$(MODULEDIR)" 2>/dev/null || true
 
 uninstall-man:
@@ -80,10 +88,14 @@ check-modules:
 
 core-check:
 	@scripts/sync_module_json.sh --check
-	@scripts/check_modules.sh --checker "$(TNT_ROOT)/scripts/module_check.sh"
+	@scripts/check_modules.sh --checker "$(TNT_ROOT)/scripts/module_check.sh" \
+		$(if $(filter 0,$(POLICY_TESTS)),examples/echo-module $(addprefix modules/,$(MODULES)))
 
 core-integration:
 	@TNT_ROOT="$(TNT_ROOT)" tests/test_tnt_runtime.sh
+	@if [ "$(POLICY_TESTS)" != 0 ]; then \
+		TNT_BIN="$(TNT_ROOT)/tnt" tests/test_guard_runtime.sh; \
+	fi
 
 perf:
 	@$(PYTHON) scripts/benchmark_modules.py $(PERF_ARGS)

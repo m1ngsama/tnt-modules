@@ -8,7 +8,7 @@ tnt\-modules \- bundled chat commands for TNT
 .EE
 .SH DESCRIPTION
 .B tnt\-modules
-supplies five optional external-process modules for
+supplies five chat-command modules and one optional policy module for
 .BR tnt (8).
 TNT starts each enabled module as a separate child process.
 The bundled modules receive public chat messages.
@@ -52,6 +52,101 @@ otherwise the module produces a short usage reply.
 Publish a random proverb from the module's built-in list.
 Trailing text is ignored.
 .SH SECURITY
+.SS Optional guard module
+.B guard-module
+uses TNT's owner-granted
+.B moderation:write
+interface to inspect SSH session behavior and public message attempts.
+It requires Python 3 with its standard library and a TNT build that supports
+this permission.
+It does not compare nicknames, require registration, or match prohibited
+words.
+Private sends share the source budget through metadata only; their bodies
+are not passed to this module.
+.PP
+By default, the guard allows a burst of eight sends, refills two tokens per
+second, and permits thirty sends per rolling minute.
+The fifth consecutive copy of one public message within ten seconds is
+rejected.
+Blank public messages, including Unicode whitespace-only messages, are
+rejected.
+Five rejections within sixty seconds request a fifteen-minute source ban.
+.PP
+Three short sessions within twenty-four hours request a twenty-four-hour
+ban when each session attempts a blank public message, sends no accepted
+message, and leaves within three seconds.
+Quiet readers who send no message do not count as probes.
+The guard requests a three-second delay before public session notices;
+an accepted message may announce the session sooner.
+An empty session that leaves before the notice adds no public history.
+.PP
+Only source IPs are counted, with at most 512 source ledgers by default.
+Message and duplicate counters are held in memory.
+Recent probe times are saved privately in
+.I TNT_STATE_DIR/guard-probes.json
+with mode 0600 and survive a module restart.
+The file contains no message bodies.
+Source bans are applied, stored, and removed by TNT's owner-control API.
+These rules do not establish who operates a source or what its intent is.
+.PP
+Enable the guard alongside any chat-command modules:
+.EX
+TNT_MODULE_GRANTS=guard-module
+TNT_MODULE_PATHS=/usr/local/libexec/tnt/modules/guard-module
+export TNT_MODULE_GRANTS TNT_MODULE_PATHS
+tnt
+.EE
+.PP
+Append to existing grants and module paths when enabling it on a configured
+server.
+Use TNT's local
+.B --list-bans
+and
+.B --unban
+options to review and remove restrictions.
+An IP may be shared by a network or anonymity relay.
+.PP
+If the guard stalls or returns an invalid response, TNT disables it and
+records the failure in its journal and private audit.
+Basic chat remains available; persisted bans remain enforced.
+Restart TNT after fixing the policy or its configuration.
+The guard currently covers TNT's SSH paths; WebSocket account policy and
+cross-proxy source attribution require separate integration.
+.SS Configuration
+.B TNT_GUARD_CONFIG
+may name an operator-owned JSON file overriding integer settings:
+.BR burst ,
+.BR per_second ,
+.BR per_minute ,
+.BR duplicate_limit ,
+.BR duplicate_window ,
+.BR violation_limit ,
+.BR violation_window ,
+.BR ban_seconds ,
+.BR probe_limit ,
+.BR probe_window ,
+.BR probe_ban_seconds ,
+.BR notice_delay_ms ,
+and
+.BR max_sources .
+Time windows and ban durations use seconds; the notice delay uses
+milliseconds.
+Values must be positive and at most 86400, with at most 4096 sources and a
+notice delay of at most 30000 milliseconds.
+Unknown settings cause startup to fail visibly.
+.SS Compatibility tests
+The command modules retain their TNT 1.1.0 compatibility.
+Use
+.B POLICY_TESTS=0
+with
+.B make core-check
+or
+.B make core-integration
+when testing a core without the moderation interface.
+The default includes policy tests and requires the owner-control interface.
+CI checks legacy command compatibility separately from the policy-capable
+core revision.
+.SS Process privileges
 Module processes run as the TNT service account.
 They inherit its user, group, filesystem, and network privileges.
 They are not an operating-system sandbox.
@@ -91,7 +186,7 @@ TNT_MODULE_PATHS=/usr/local/libexec/tnt/modules/roll\-module:\e
 .SH FILES
 .TP
 .I /usr/local/libexec/tnt/modules/
-Default installation root for the five module directories.
+Default installation root for the six module directories.
 Changing
 .B PREFIX
 or
