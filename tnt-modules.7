@@ -134,6 +134,18 @@ milliseconds.
 Values must be positive and at most 86400, with at most 4096 sources and a
 notice delay of at most 30000 milliseconds.
 Unknown settings cause startup to fail visibly.
+.SS Compatibility tests
+The command modules retain their TNT 1.1.0 compatibility.
+Use
+.B POLICY_TESTS=0
+with
+.B make core-check
+or
+.B make core-integration
+when testing a core without the moderation interface.
+The default includes policy tests and requires the owner-control interface.
+CI checks legacy command compatibility separately from the policy-capable
+core revision.
 .SS Process privileges
 Module processes run as the TNT service account.
 They inherit its user, group, filesystem, and network privileges.

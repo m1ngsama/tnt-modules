@@ -5,6 +5,7 @@
 PYTHON ?= python3
 PERF_ARGS ?=
 TNT_ROOT ?= ../TNT
+POLICY_TESTS ?= 1
 PREFIX ?= /usr/local
 MANDIR ?= $(PREFIX)/share/man
 LIBEXECDIR ?= $(PREFIX)/libexec
@@ -87,11 +88,14 @@ check-modules:
 
 core-check:
 	@scripts/sync_module_json.sh --check
-	@scripts/check_modules.sh --checker "$(TNT_ROOT)/scripts/module_check.sh"
+	@scripts/check_modules.sh --checker "$(TNT_ROOT)/scripts/module_check.sh" \
+		$(if $(filter 0,$(POLICY_TESTS)),examples/echo-module $(addprefix modules/,$(MODULES)))
 
 core-integration:
 	@TNT_ROOT="$(TNT_ROOT)" tests/test_tnt_runtime.sh
-	@TNT_BIN="$(TNT_ROOT)/tnt" tests/test_guard_runtime.sh
+	@if [ "$(POLICY_TESTS)" != 0 ]; then \
+		TNT_BIN="$(TNT_ROOT)/tnt" tests/test_guard_runtime.sh; \
+	fi
 
 perf:
 	@$(PYTHON) scripts/benchmark_modules.py $(PERF_ARGS)
