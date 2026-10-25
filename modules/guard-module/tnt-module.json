@@ -1,0 +1,9 @@
+{
+  "protocol": "tnt.module.v1",
+  "name": "guard-module",
+  "version": "0.1.0",
+  "description": "Optional behavior-based protection for anonymous SSH communities.",
+  "entrypoint": "./guard-module.py",
+  "permissions": ["moderation:write"],
+  "events": ["moderation.check"]
+}

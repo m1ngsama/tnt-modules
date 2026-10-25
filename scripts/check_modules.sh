@@ -355,11 +355,14 @@ if any(ord(character) < 32 or ord(character) == 127 or
        character.isspace() or character in '|;&`$<>\\'
        for character in entrypoint) or entrypoint.startswith("/") or ".." in entrypoint:
     abort(f'unsafe entrypoint: {entrypoint}')
-if "message:read" not in permissions:
+if "moderation:write" in permissions:
+    if permissions != ["moderation:write"] or events != ["moderation.check"]:
+        abort('moderation modules require only moderation:write and moderation.check')
+elif "message:read" not in permissions:
     abort('missing "message:read" member in "permissions"')
-if "message:create" not in permissions:
+elif "message:create" not in permissions:
     abort('missing "message:create" member in "permissions"')
-if "message.created" not in events:
+elif "message.created" not in events:
     abort('missing "message.created" member in "events"')
 
 if "description" in manifest and type(manifest["description"]) is not str:
