@@ -29,6 +29,7 @@ for module_dir in "$ROOT"/examples/* "$ROOT"/modules/*; do
     exit 1
   fi
   [ -f "$module_dir/tnt-module.json" ] || continue
+  grep -q '"moderation:write"' "$module_dir/tnt-module.json" && continue
   destination="$module_dir/module_json.awk"
   if [ -L "$destination" ]; then
     echo "module-json: refusing symlink destination: $destination" >&2

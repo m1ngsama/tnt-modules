@@ -752,7 +752,7 @@ def discover_modules(root: pathlib.Path, requested: Sequence[str]) -> list[Modul
         directories = sorted(
             path.parent
             for path in modules_dir.glob("*/tnt-module.json")
-            if path.is_file()
+            if path.is_file() and "message.created" in json.loads(path.read_text()).get("events", [])
         )
     if not directories:
         raise BenchmarkError("no module directories found")

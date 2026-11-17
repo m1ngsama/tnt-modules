@@ -70,6 +70,10 @@ for module in 8ball-module choose-module flip-module quote-module \
         fail "staged install is missing $module/tnt-module.json"
 done
 
+guard="$stage/usr/libexec/tnt/modules/guard-module"
+[ -x "$guard/guard-module.py" ] || fail "staged install is missing the guard entrypoint"
+[ -f "$guard/tnt-module.json" ] || fail "staged install is missing the guard manifest"
+
 make DESTDIR="$stage" PREFIX=/usr uninstall
 [ ! -e "$stage/usr/share/man/man7/tnt-modules.7" ] ||
     fail "uninstall left tnt-modules.7"
@@ -78,5 +82,6 @@ for module in 8ball-module choose-module flip-module quote-module \
     [ ! -e "$stage/usr/libexec/tnt/modules/$module" ] ||
         fail "uninstall left the $module directory"
 done
+[ ! -e "$guard" ] || fail "uninstall left the guard directory"
 
 echo "release-check: tnt-modules $version is ready"

@@ -45,10 +45,16 @@ jobs:
         include:
           - tier: minimum
             tnt_ref: v1.1.0
+            policy_tests: 0
           - tier: stable
             tnt_ref: v1.3.2
+            policy_tests: 0
           - tier: main
             tnt_ref: main
+            policy_tests: 0
+          - tier: policy
+            tnt_ref: db4ec57723a89753b827506e918587af193b92e5
+            policy_tests: 1
     steps:
       - name: Check out modules
         uses: actions/checkout@v6
@@ -67,6 +73,6 @@ jobs:
       - name: Build TNT core
         run: make -C TNT
       - name: Validate with TNT's authoritative checker
-        run: make -C tnt-modules core-check TNT_ROOT="$GITHUB_WORKSPACE/TNT"
-      - name: Exercise all modules through a real TNT server
-        run: make -C tnt-modules core-integration TNT_ROOT="$GITHUB_WORKSPACE/TNT"
+        run: make -C tnt-modules core-check TNT_ROOT="$GITHUB_WORKSPACE/TNT" POLICY_TESTS=${{ matrix.policy_tests }}
+      - name: Exercise compatible modules through a real TNT server
+        run: make -C tnt-modules core-integration TNT_ROOT="$GITHUB_WORKSPACE/TNT" POLICY_TESTS=${{ matrix.policy_tests }}
