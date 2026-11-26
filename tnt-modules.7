@@ -110,8 +110,9 @@ If the guard stalls or returns an invalid response, TNT disables it and
 records the failure in its journal and private audit.
 Basic chat remains available; persisted bans remain enforced.
 Restart TNT after fixing the policy or its configuration.
-The guard currently covers TNT's SSH paths; WebSocket account policy and
-cross-proxy source attribution require separate integration.
+The guard covers TNT's SSH paths only.
+TNT does not pass WebSocket gateway sends or account identities to
+moderation modules, and it does not attribute sources behind proxies.
 .SS Configuration
 .B TNT_GUARD_CONFIG
 may name an operator-owned JSON file overriding integer settings:
@@ -134,6 +135,21 @@ milliseconds.
 Values must be positive and at most 86400, with at most 4096 sources and a
 notice delay of at most 30000 milliseconds.
 Unknown settings cause startup to fail visibly.
+.PP
+Set
+.B mode
+to
+.B observe
+to allow every check and write each decision the guard would have made to
+standard error, which the module inherits from TNT.
+Each line is a JSON object with the event, source IP, session, action,
+reason, and any ban duration; message bodies are not logged.
+Observe mode requests no notice delay, rejection, or ban.
+The default mode is
+.BR enforce .
+.EX
+{"mode": "observe"}
+.EE
 .SS Compatibility tests
 The command modules retain their TNT 1.1.0 compatibility.
 Use

@@ -137,6 +137,24 @@ with tempfile.TemporaryDirectory(prefix="tnt-moderation.") as directory:
         assert all("127.0.0.1" not in line for line in history().splitlines())
         assert all("content" not in row for row in audit())
         print("✓ audit metadata stays private and contains no message bodies")
+
+        server.terminate()
+        server.wait(timeout=5)
+        log.seek(0)
+        log.truncate()
+        (state / "guard.json").write_text('{"mode": "observe"}')
+        env["TNT_GUARD_CONFIG"] = str(state / "guard.json")
+        server = start()
+        client = join("observed")
+        send(client, b"".join(("observed message %d\r" % n).encode() for n in range(30)))
+        wait_for(lambda: history().count("|observed|") >= 30, "observe mode limited the flood")
+        close(client)
+        assert not command("--list-bans").stdout, "observe mode requested a ban"
+        observed = [json.loads(line) for line in (state / "server.log").read_text().splitlines()
+                    if line.startswith('{"guard":"observe"')]
+        assert any(row["action"] == "ban" for row in observed), "observe mode logged no decision"
+        assert "observed message" not in (state / "server.log").read_text()
+        print("✓ observe mode logs decisions without enforcing them")
     except BaseException:
         print((state / "server.log").read_text(), file=sys.stderr)
         print(history(), file=sys.stderr)
