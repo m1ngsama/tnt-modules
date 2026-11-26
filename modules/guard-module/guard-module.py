@@ -22,6 +22,7 @@ DEFAULTS = {
     "notice_delay_ms": 3000,
     "max_sources": 512,
 }
+MODES = ("enforce", "observe")
 NOTICES = {
     "blank_message": ("Messages must contain visible text.", "消息需要包含可见的文字。"),
     "message_rate": ("You are sending too quickly. Please wait a moment.", "消息发送得太快，请稍后再试。"),
@@ -32,7 +33,11 @@ NOTICES = {
 
 class Guard:
     def __init__(self, config=None, state=None):
-        self.config = DEFAULTS | (config or {})
+        config = dict(config or {})
+        self.mode = config.pop("mode", "enforce")
+        if self.mode not in MODES:
+            raise ValueError("invalid guard setting: mode")
+        self.config = DEFAULTS | config
         for name, value in self.config.items():
             if name not in DEFAULTS or type(value) is not int or not 1 <= value <= 86400:
                 raise ValueError(f"invalid guard setting: {name}")
@@ -81,7 +86,7 @@ class Guard:
             self.sources[ip] = {"tokens": config["burst"], "at": now, "last": None,
                                 "copies": 0, "copy_at": now,
                                 "messages": collections.deque(), "violations": collections.deque(),
-                                "blank_sessions": set()}
+                                "blank_sessions": set(), "sent_sessions": set()}
         source = self.sources[ip]
         self.sources.move_to_end(ip)
         reason = ""
@@ -89,8 +94,9 @@ class Guard:
         if event["event"] == "session.join":
             result["notice_delay_ms"] = config["notice_delay_ms"]
         elif event["event"] == "session.leave":
-            if (event["accepted"] == 0 and event["rejected"] > 0 and
-                    event["session"] in source["blank_sessions"] and
+            accepted = (event["session"] in source["sent_sessions"] if self.mode == "observe"
+                        else event["accepted"] > 0 or event["rejected"] == 0)
+            if (not accepted and event["session"] in source["blank_sessions"] and
                     event["elapsed_ms"] < config["notice_delay_ms"]):
                 times = [t for t in self.probes.get(ip, []) if 0 <= now - t < config["probe_window"]]
                 times.append(now)
@@ -104,6 +110,7 @@ class Guard:
                     reason, seconds = "repeated_empty_probes", config["probe_ban_seconds"]
                 self.save()
             source["blank_sessions"].discard(event["session"])
+            source["sent_sessions"].discard(event["session"])
         elif event["event"] == "message":
             text = event.get("plain_text")
             if text is not None and (not text or all(c.isspace() or c in "\u200b\u200c\u200d\u2060\ufeff" for c in text)):
@@ -141,6 +148,18 @@ class Guard:
                 source["tokens"] = config["burst"]
                 source["messages"].clear()
                 source["copies"] = 0
+        if self.mode == "observe":
+            if event["event"] == "message" and not reason:
+                source["sent_sessions"].add(event["session"])
+            if result["action"] != "allow":
+                record = {"guard": "observe", "event": event["event"], "ip": ip,
+                          "session": event.get("session"), "action": result["action"],
+                          "reason": result["reason"]}
+                if seconds:
+                    record["ban_seconds"] = seconds
+                print(json.dumps(record, separators=(",", ":")), file=sys.stderr, flush=True)
+            return {"type": "moderation.result", "id": event["id"], "action": "allow",
+                    "reason": "accepted", "notice": "", "notice_delay_ms": 0}
         return result
 
 

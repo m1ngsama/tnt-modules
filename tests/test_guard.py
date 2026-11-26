@@ -1,4 +1,7 @@
+import contextlib
 import importlib.util
+import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -97,9 +100,44 @@ class GuardTests(unittest.TestCase):
             guard.check(event)
         self.assertEqual(len(guard.sources), 2)
 
+    def test_observe_mode_logs_decisions_without_enforcing(self):
+        guard = MODULE.Guard({"mode": "observe"})
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            join = guard.check(self.event() | {"event": "session.join"})
+            results = [guard.check(self.event(plain_text=str(i))) for i in range(13)]
+            blank = guard.check(self.event(plain_text="\n"))
+        self.assertEqual(join["notice_delay_ms"], 0)
+        for result in results + [blank]:
+            self.assertEqual((result["action"], result["notice"], result["notice_delay_ms"]),
+                             ("allow", "", 0))
+        records = [json.loads(line) for line in log.getvalue().splitlines()]
+        self.assertEqual(records[0], {"guard": "observe", "event": "message", "ip": "203.0.113.1",
+                                      "session": "s-1", "action": "reject", "reason": "message_rate"})
+        self.assertIn({"guard": "observe", "event": "message", "ip": "203.0.113.1", "session": "s-1",
+                       "action": "ban", "reason": "message_rate", "ban_seconds": 900}, records)
+        self.assertEqual(records[-1]["reason"], "blank_message")
+        self.assertNotIn("plain_text", log.getvalue())
+
+    def test_observe_mode_reports_probe_bans(self):
+        guard = MODULE.Guard({"mode": "observe"})
+        log = io.StringIO()
+        leave = self.event() | {"event": "session.leave", "accepted": 1}
+        with contextlib.redirect_stderr(log):
+            for i in range(3):
+                session = {"session": str(i), "timestamp": 1000 + i * 3600}
+                guard.check(self.event(plain_text="\n") | session)
+                self.assertEqual(guard.check(leave | session)["action"], "allow")
+            guard.check(self.event(plain_text="hi") | {"session": "3"})
+            guard.check(self.event(plain_text="\n") | {"session": "3"})
+            guard.check(leave | {"session": "3", "timestamp": 20000})
+        reasons = [json.loads(line)["reason"] for line in log.getvalue().splitlines()]
+        self.assertEqual(reasons.count("repeated_empty_probes"), 1)
+
     def test_configuration_rejects_unknown_or_unbounded_values(self):
         for config in ({"nickname": 1}, {"burst": 0}, {"max_sources": 4097},
-                       {"notice_delay_ms": 30001}, {"burst": True}):
+                       {"notice_delay_ms": 30001}, {"burst": True}, {"mode": "dry-run"},
+                       {"mode": 1}):
             with self.assertRaises(ValueError):
                 MODULE.Guard(config)
 
